@@ -1,0 +1,47 @@
+output_dir: /dfs/scratch0/yangyi/feature_invariant/NBFNet-PyG/test_output/
+
+dataset:
+  class: Indecommerce
+  num_rows: 10000
+  root: /dfs/scratch0/yangyi/feature_invariant/NBFNet-PyG/new_raw_test_dataset_ecommerce_4_hm_buy_pp/
+  version: v1
+  csv_file_path: /dfs/scratch0/yangyi/feature_invariant/NBFNet-PyG/data/
+  train_categories: [computers.desktop, appliances.kitchen.refrigerators, furniture.bedroom.bed, electronics.smartphone, apparel.shoes]
+  test_categories: [hm]
+  # all available categories under E-commerce dataset: computers.desktop, appliances.kitchen.refrigerators, furniture.bedroom.bed, electronics.smartphone, apparel.shoes
+  # all available categories under HM dataset: hm
+
+model:
+  class: NBFNet
+  feature_method: ours # ["llm", "structural", "normalized", "ours", "raw", "gaussian"]
+  input_dim: 256 # node feature dimension
+  hidden_dims: [256, 256, 256, 256, 256, 256]
+  message_func: distmult
+  aggregate_func: pna
+  short_cut: yes
+  layer_norm: yes
+  dependent: no
+  # structural: need no additional parameters
+  # ours: need the following parameters
+  edge_embed_dim: 256 
+  edge_embed_num_layers: 1 
+  edge_model: GINEConv # or GCNConv (but only works with use_p_value=False)
+  use_p_value: True
+  # normalized: need the following parameters
+  # LM: need the following parameters
+
+task:
+  num_negative: 64
+  strict_negative: yes
+  adversarial_temperature: 1
+  metric: [mr, mrr, hits@1, hits@3, hits@10, hits@10_50]
+
+optimizer:
+  class: Adam
+  lr: 5.0e-3
+
+train:
+  gpus: [0]
+  batch_size: 32
+  num_epoch: 30
+  log_interval: 100
