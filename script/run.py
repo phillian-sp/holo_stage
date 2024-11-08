@@ -234,7 +234,8 @@ class Workspace:
                     "model": self.model.state_dict(),
                     "optimizer": optimizer.state_dict(),
                 }
-                torch.save(state, "model_epoch_%d.pth" % epoch)
+                path = os.path.join(self.cfg.save_dir, "model_epoch_%d.pth" % epoch)
+                torch.save(state, path)
 
                 result = self.test_list(mode="valid")
                 if result > best_result:
@@ -247,10 +248,9 @@ class Workspace:
             self.stat[f"other/epoch"].append(epoch)
             self.stat.summary(epoch, reset=True)
 
-        print("Load checkpoint from model_epoch_%d.pth" % best_epoch)
-        state = torch.load(
-            "model_epoch_%d.pth" % best_epoch
-        )  # , map_location=self.device)
+        path = os.path.join(self.cfg.save_dir, "model_epoch_%d.pth" % best_epoch)
+        print("Load checkpoint from path: %s" % path)
+        state = torch.load(path)  # , map_location=self.device)
         self.model.load_state_dict(state["model"])
 
         result = self.test_list(mode="valid")
