@@ -1,17 +1,13 @@
 import os
 import sys
 import math
-import pprint
 import yaml
 import pyrallis
 
 import torch
 from torch import optim
-from torch import nn
 from torch.nn import functional as F
-from torch import distributed as dist
 from torch.utils import data as torch_data
-from torch_geometric.data import Data
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from nbfnet import tasks, util
@@ -21,12 +17,51 @@ from nbfnet.util import DatasetConfig
 from common_utils import MultiCounter, seed_everything, Logger, wrap_ruler
 from dataclasses import dataclass, field
 from typing import List
+from collections import defaultdict
+
+# to add reproducibility
+# import os
+# os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
 separator = ">" * 30
 line = "-" * 30
 
 METRIC = ["mr", "mrr", "hits@1", "hits@3", "hits@10", "hits@10_50"]
+
+
+# a function to calculating metrics
+def calculate_metrics(ranking, num_negatives, metric):
+    if metric == "mr":
+        score = ranking.float().mean()
+    elif metric == "mrr":
+        score = (1 / ranking.float()).mean()
+    elif metric.startswith("hits@"):
+        values = metric[5:].split("_")
+        threshold = int(values[0])
+        if len(values) > 1:
+            num_sample = int(values[1])
+            # unbiased estimation
+            fp_rate = (ranking - 1).float() / num_negatives
+            score = 0
+            for i in range(threshold):
+                # choose i false positive from num_sample - 1 negatives
+                num_comb = (
+                    math.factorial(num_sample - 1)
+                    / math.factorial(i)
+                    / math.factorial(num_sample - i - 1)
+                )
+                score += (
+                    num_comb
+                    * (fp_rate**i)
+                    * ((1 - fp_rate) ** (num_sample - i - 1))
+                )
+            score = score.mean()
+        else:
+            score = (ranking <= threshold).float().mean()
+    else:
+        raise ValueError(f"Invalid metric: {metric}")
+    return score
 
 
 @dataclass
@@ -74,6 +109,7 @@ class MainConfig:
 
     def __post_init__(self):
         seed_everything(self.seed)
+        # torch.use_deterministic_algorithms(True)
         self.device = (
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         )
@@ -116,13 +152,12 @@ class Workspace:
         print(f"Random seed: {self.cfg.seed}")
         print(f"Train categories: {self.cfg.dataset.train_categories}")
         print(f"Test categories: {self.cfg.dataset.test_categories}")
-        print(f"Feature method: {self.cfg.model.feature_method}")
         print(f"Config file: {self.cfg.cfg_path}")
         print(wrap_ruler(""))
 
         # build dataset
         self.dataset_list, self.num_relations = util.build_dataset(self.cfg)
-        self.model: EdgeGraphsNBFNet = util.build_model(self.cfg)
+        self.model: EdgeGraphsNBFNet = util.build_model(self.num_relations, self.cfg)
         self.model = self.model.to(self.cfg.device)
         self.train_data_list, self.valid_data_list, self.test_data_list = (
             self.dataset_list
@@ -155,7 +190,7 @@ class Workspace:
             train_triplets = torch.cat(
                 [train_data.target_edge_index, train_data.target_edge_type.unsqueeze(0)]
             ).t()
-            sampler = torch_data.DistributedSampler(train_triplets)
+            sampler = torch_data.RandomSampler(train_triplets)
             train_loaders[name] = torch_data.DataLoader(
                 train_triplets, self.cfg.batch_size, sampler=sampler
             )
@@ -172,9 +207,7 @@ class Workspace:
             print(wrap_ruler(f"Epoch {epoch} begin"))
 
             losses = []
-            sampler.set_epoch(epoch)
             for dataset_name, train_loader in train_loaders.items():
-                print(f"Start training on {dataset_name}")
                 for batch in train_loader:  # for each batch in a given category
                     batch_size = batch.size(0)
                     if hasattr(self.cfg.nbf, "edge_embed_dim"):
@@ -219,13 +252,13 @@ class Workspace:
 
                     losses.append(loss.item())
                     self.stat[f"loss/{dataset_name}"].append(
-                        loss.item(), count=batch_size
+                        loss.item() * batch_size, count=batch_size
                     )
 
                 # end of training on a category
                 avg_loss = sum(losses) / len(losses)
-                print(f"average binary cross entropy: {avg_loss}")
-                print(wrap_ruler(f"Epoch {epoch} end"))
+                print(f"average binary cross entropy for {dataset_name}: {avg_loss}")
+            print(wrap_ruler(f"Epoch {epoch} end"))
 
             if (epoch + 1) % self.cfg.eval_interval == 0:
                 # end of training on all categories in a eval_interval
@@ -237,12 +270,12 @@ class Workspace:
                 path = os.path.join(self.cfg.save_dir, "model_epoch_%d.pth" % epoch)
                 torch.save(state, path)
 
-                result = self.test_list(mode="valid")
-                if result > best_result:
-                    best_result = result
+                ave_metric_scores = self.test_list(mode="valid")
+                if ave_metric_scores["mrr"] > best_result:
+                    best_result = ave_metric_scores["mrr"]
                     best_epoch = epoch
 
-                test_result = self.test_list(mode="test")
+                self.test_list(mode="test")
 
             # end of training on all categories in a epoch
             self.stat[f"other/epoch"].append(epoch)
@@ -253,8 +286,14 @@ class Workspace:
         state = torch.load(path)  # , map_location=self.device)
         self.model.load_state_dict(state["model"])
 
-        result = self.test_list(mode="valid")
+        valid_result = self.test_list(mode="valid")
         test_result = self.test_list(mode="test")
+
+        self.stat.reset()
+        for metric in self.cfg.metric:
+            self.stat[f"best_val/{metric}"].append(valid_result[metric])
+            self.stat[f"best_test/{metric}"].append(test_result[metric])
+        self.stat.summary(self.cfg.epochs, reset=True)
 
     def test_list(self, mode="test"):
         print(wrap_ruler(f"Test on {mode}"))
@@ -265,16 +304,20 @@ class Workspace:
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
-        mrr_list = []
+        ave_metric_scores = defaultdict(float)
         for name, test_data in data_dict.items():
             print(f"Start testing on {name}")
-            mrr = self.test(name, test_data)
-            mrr_list.append(mrr)
+            metric_scores = self.test(name, test_data)
+            for metric, score in metric_scores.items():
+                ave_metric_scores[metric] += score
 
-        ave_mrr = sum(mrr_list) / len(mrr_list)
-        print(f"Average MRR: {ave_mrr}")
+        for metric in self.cfg.metric:
+            ave_metric_scores[metric] /= len(data_dict)
+            self.stat[f"{mode}/{metric}"].append(ave_metric_scores[metric])
+            print(f"Average {metric}: {ave_metric_scores[metric]}")
+
         print(wrap_ruler(""))
-        return ave_mrr
+        return ave_metric_scores
 
     @torch.no_grad()
     def test(self, dataset_name, test_data):
@@ -284,7 +327,7 @@ class Workspace:
         test_triplets = torch.cat(
             [test_data.target_edge_index, test_data.target_edge_type.unsqueeze(0)]
         ).t()
-        sampler = torch_data.DistributedSampler(test_triplets)
+        sampler = torch_data.RandomSampler(test_triplets)
         test_loader = torch_data.DataLoader(
             test_triplets, self.cfg.batch_size, sampler=sampler
         )
@@ -320,42 +363,16 @@ class Workspace:
         all_ranking = torch.cat(rankings)
         all_num_negative = torch.cat(num_negatives)
 
+        metric_scores = {}
         for metric in self.cfg.metric:
-            if metric == "mr":
-                score = all_ranking.float().mean()
-            elif metric == "mrr":
-                score = (1 / all_ranking.float()).mean()
-            elif metric.startswith("hits@"):
-                values = metric[5:].split("_")
-                threshold = int(values[0])
-                if len(values) > 1:
-                    num_sample = int(values[1])
-                    # unbiased estimation
-                    fp_rate = (all_ranking - 1).float() / all_num_negative
-                    score = 0
-                    for i in range(threshold):
-                        # choose i false positive from num_sample - 1 negatives
-                        num_comb = (
-                            math.factorial(num_sample - 1)
-                            / math.factorial(i)
-                            / math.factorial(num_sample - i - 1)
-                        )
-                        score += (
-                            num_comb
-                            * (fp_rate**i)
-                            * ((1 - fp_rate) ** (num_sample - i - 1))
-                        )
-                    score = score.mean()
-                else:
-                    score = (all_ranking <= threshold).float().mean()
-            print("%s: %g" % (metric, score))
+            score = calculate_metrics(all_ranking, all_num_negative, metric)
+            metric_scores[metric] = score
             self.stat[f"{dataset_name}/{metric}"].append(score)
-        mrr = (1 / all_ranking.float()).mean()
 
-        return mrr
+        return metric_scores
 
 
 if __name__ == "__main__":
-    cfg = MainConfig()
+    cfg = pyrallis.parse(config_class=MainConfig)
     workspace = Workspace(cfg)
     workspace.train_and_validate()

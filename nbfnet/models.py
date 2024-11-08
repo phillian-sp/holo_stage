@@ -1,5 +1,5 @@
 import torch
-import torch_geometric
+import torch.nn as nn
 from torch_geometric.nn import GINEConv, GCNConv
 from torch_geometric.nn.pool import global_add_pool
 from dataclasses import dataclass, field
@@ -58,14 +58,16 @@ class EdgeGraphsNBFNetConfig:
     use_p_value: int = 1
 
 
-class EdgeGraphsNBFNet(NBFNet):
+class EdgeGraphsNBFNet(nn.Module):
     def __init__(
         self,
         num_relation,
         cfg: EdgeGraphsNBFNetConfig,
     ):
+        super().__init__()
         self.edge_embed_dim = cfg.edge_embed_dim
-        super().__init__(
+        # Create an instance of NBFNet as a member variable
+        self.nbfnet = NBFNet(
             cfg.input_dim,
             cfg.hidden_dims,
             num_relation,
@@ -117,4 +119,5 @@ class EdgeGraphsNBFNet(NBFNet):
 
         data.edge_embeddings = edge_embeddings
         data.x = None
-        return super().forward(data, batch)
+        # Use the NBFNet instance instead of calling super()
+        return self.nbfnet.forward(data, batch)

@@ -308,17 +308,16 @@ def build_dataset(cfg: MainConfig):
     else:
         raise ValueError("Unknown dataset `%s`" % cls)
 
-    if get_rank() == 0:
-        print("%s dataset" % cls)
-        train_data_list, valid_data_list, test_data_list = dataset_list
-        print(
-            "#train: %d, #valid: %d, #test: %d"
-            % (
-                sum([data.target_edge_index.shape[1] for data in train_data_list]),
-                sum([data.target_edge_index.shape[1] for data in valid_data_list]),
-                sum([data.target_edge_index.shape[1] for data in test_data_list]),
-            )
+    print("%s dataset" % cls)
+    train_data_list, valid_data_list, test_data_list = dataset_list
+    print(
+        "#train: %d, #valid: %d, #test: %d"
+        % (
+            sum([data.target_edge_index.shape[1] for data in train_data_list]),
+            sum([data.target_edge_index.shape[1] for data in valid_data_list]),
+            sum([data.target_edge_index.shape[1] for data in test_data_list]),
         )
+    )
 
     return dataset_list, num_relations
 
