@@ -39,13 +39,26 @@ def edge_match(edge_index, query_index):
 
 
 def negative_sampling(data, batch, num_negative, edge_embed_dim=None, strict=True):
+    """
+    :param data: graph data
+    :param batch: positive batch
+    :param num_negative: number of negative samples
+    :param edge_embed_dim: edge embedding dimension
+    :param strict: strict negative sampling
+    :return: negative batch
+
+    This function samples negative examples for the given positive batch.
+
+    strict negative sampling: for a given (h, r) batch we will NOT sample true tails as random negatives
+    similarly, for a given (t, r) we will NOT sample existing true heads as random negatives
+    """
     batch_size = len(batch)
     pos_h_index, pos_t_index, pos_r_index = batch.t()
 
     # strict negative sampling vs random negative sampling
     if strict:
         t_mask, h_mask = strict_negative_mask(data, batch, edge_embed_dim)
-        t_mask = t_mask[:batch_size // 2]
+        t_mask = t_mask[: batch_size // 2]
         neg_t_candidate = t_mask.nonzero()[:, 1]
         num_t_candidate = t_mask.sum(dim=-1)
         # draw samples for negative tails
@@ -54,7 +67,7 @@ def negative_sampling(data, batch, num_negative, edge_embed_dim=None, strict=Tru
         index = index + (num_t_candidate.cumsum(0) - num_t_candidate).unsqueeze(-1)
         neg_t_index = neg_t_candidate[index]
 
-        h_mask = h_mask[batch_size // 2:]
+        h_mask = h_mask[batch_size // 2 :]
         neg_h_candidate = h_mask.nonzero()[:, 1]
         num_h_candidate = h_mask.sum(dim=-1)
         # draw samples for negative heads
@@ -63,14 +76,19 @@ def negative_sampling(data, batch, num_negative, edge_embed_dim=None, strict=Tru
         index = index + (num_h_candidate.cumsum(0) - num_h_candidate).unsqueeze(-1)
         neg_h_index = neg_h_candidate[index]
     else:
-        neg_index = torch.randint(data.num_nodes, (batch_size, num_negative), device=batch.device)
-        neg_t_index, neg_h_index = neg_index[:batch_size // 2], neg_index[batch_size // 2:]
+        neg_index = torch.randint(
+            data.num_nodes, (batch_size, num_negative), device=batch.device
+        )
+        neg_t_index, neg_h_index = (
+            neg_index[: batch_size // 2],
+            neg_index[batch_size // 2 :],
+        )
 
     h_index = pos_h_index.unsqueeze(-1).repeat(1, num_negative + 1)
     t_index = pos_t_index.unsqueeze(-1).repeat(1, num_negative + 1)
     r_index = pos_r_index.unsqueeze(-1).repeat(1, num_negative + 1)
-    t_index[:batch_size // 2, 1:] = neg_t_index
-    h_index[batch_size // 2:, 1:] = neg_h_index
+    t_index[: batch_size // 2, 1:] = neg_t_index
+    h_index[batch_size // 2 :, 1:] = neg_h_index
 
     return torch.stack([h_index, t_index, r_index], dim=-1)
 
@@ -108,8 +126,12 @@ def strict_negative_mask(data, batch, edge_embed_dim=None):
     edge_id, num_t_truth = edge_match(edge_index, query_index)
     # build an index from the found edges
     t_truth_index = data.edge_index[1, edge_id]
-    sample_id = torch.arange(len(num_t_truth), device=batch.device).repeat_interleave(num_t_truth)
-    t_mask = torch.ones(len(num_t_truth), data.num_nodes, dtype=torch.bool, device=batch.device)
+    sample_id = torch.arange(len(num_t_truth), device=batch.device).repeat_interleave(
+        num_t_truth
+    )
+    t_mask = torch.ones(
+        len(num_t_truth), data.num_nodes, dtype=torch.bool, device=batch.device
+    )
     # assign 0s to the mask with the found true tails
     t_mask[sample_id, t_truth_index] = 0
     t_mask.scatter_(1, pos_t_index.unsqueeze(-1), 0)
@@ -117,9 +139,9 @@ def strict_negative_mask(data, batch, edge_embed_dim=None):
     # part II: sample hard negative heads
     # edge_index[1] denotes tails, so the edge index becomes (t, r)
     if edge_embed_dim is None:
-         edge_index = torch.stack([data.edge_index[1], data.edge_type])
+        edge_index = torch.stack([data.edge_index[1], data.edge_type])
     else:
-         edge_index = torch.stack([data.edge_index[1], data.original_edge_type])
+        edge_index = torch.stack([data.edge_index[1], data.original_edge_type])
 
     # edge index of current batch (tail, relation) for which we will sample heads
     query_index = torch.stack([pos_t_index, pos_r_index])
@@ -127,8 +149,12 @@ def strict_negative_mask(data, batch, edge_embed_dim=None):
     edge_id, num_h_truth = edge_match(edge_index, query_index)
     # build an index from the found edges
     h_truth_index = data.edge_index[0, edge_id]
-    sample_id = torch.arange(len(num_h_truth), device=batch.device).repeat_interleave(num_h_truth)
-    h_mask = torch.ones(len(num_h_truth), data.num_nodes, dtype=torch.bool, device=batch.device)
+    sample_id = torch.arange(len(num_h_truth), device=batch.device).repeat_interleave(
+        num_h_truth
+    )
+    h_mask = torch.ones(
+        len(num_h_truth), data.num_nodes, dtype=torch.bool, device=batch.device
+    )
     # assign 0s to the mask with the found true heads
     h_mask[sample_id, h_truth_index] = 0
     h_mask.scatter_(1, pos_h_index.unsqueeze(-1), 0)
