@@ -29,21 +29,19 @@ dataset:
   # all available categories under E-commerce dataset: computers.desktop, appliances.kitchen.refrigerators, furniture.bedroom.bed, electronics.smartphone, apparel.shoes
   # all available categories under HM dataset: hm
 
-nbf:
-  # class: NBFNet
-  # feature_method: ours # ["llm", "structural", "normalized", "ours", "raw", "gaussian"]
-  input_dim: 256 # node feature dimension
-  hidden_dims: [256, 256, 256, 256, 256, 256]
-  message_func: distmult
-  aggregate_func: pna
-  short_cut: yes
-  layer_norm: yes
-  dependent: no
-  # structural: need no additional parameters
-  # ours: need the following parameters
+edgegraph:
+  final_model: nbf
+  nbf:
+    input_dim: 256 # node feature dimension
+    hidden_dims: [256, 256, 256, 256, 256, 256]
+    message_func: distmult
+    aggregate_func: pna
+    short_cut: yes
+    layer_norm: yes
+    dependent: no
+  # rgcn:
+
   edge_embed_dim: 256
   edge_embed_num_layers: 1
   edge_model: GINEConv # or GCNConv (but only works with use_p_value=False)
   use_p_value: True
-  # normalized: need the following parameters
-  # LM: need the following parameters

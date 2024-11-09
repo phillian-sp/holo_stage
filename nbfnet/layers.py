@@ -16,8 +16,19 @@ class GeneralizedRelationalConv(MessagePassing):
         "distmult": "mul",
     }
 
-    def __init__(self, input_dim, output_dim, num_relation, query_input_dim, message_func="distmult",
-                 aggregate_func="pna", layer_norm=False, activation="relu", dependent=True, edge_embed_dim=None):
+    def __init__(
+        self,
+        input_dim,
+        output_dim,
+        num_relation,
+        query_input_dim,
+        message_func="distmult",
+        aggregate_func="pna",
+        layer_norm=False,
+        activation="relu",
+        dependent=True,
+        edge_embed_dim=None,
+    ):
         super(GeneralizedRelationalConv, self).__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -53,12 +64,67 @@ class GeneralizedRelationalConv(MessagePassing):
         if edge_embed_dim is not None:
             self.edgegraph_mlp = nn.Linear(edge_embed_dim, input_dim)
 
-    def forward(self, input, query, boundary, edge_index, edge_type, size, edge_weight=None):
+    def forward(
+        self, input, query, boundary, edge_index, edge_type, size, edge_weight=None
+    ):
+        """
+        Forward pass for the GeneralizedRelationalConv layer.
+
+        Parameters:
+        ----------
+        input : Tensor
+            Node feature tensor of shape `(batch_size, num_nodes, input_dim)`,
+            representing the initial features for each node in the batch.
+
+        query : Tensor
+            Query tensor of shape `(batch_size, query_input_dim)`, representing
+            embeddings for different relations. This is used to compute the relation
+            embeddings if `dependent=True`.
+
+        boundary : Tensor
+            Tensor of shape `(batch_size, num_nodes, input_dim)` containing the initial
+            boundary conditions (initial states) for each node in the graph. These are
+            concatenated with the messages during message passing.
+
+        edge_index : LongTensor
+            Edge index tensor of shape `(2, num_edges)`, where each column represents
+            a directed edge in the graph, with the first row being the source and the
+            second row the target node indices.
+
+        edge_type : LongTensor
+            Tensor of shape `(num_edges,)` or `(num_edges, edge_dim)`, representing the
+            type or embedding of each edge. The edge type is used to select the appropriate
+            relation embedding for each edge.
+
+        size : tuple of ints
+            Tuple representing the size of the graph (num_nodes_in_graph,
+            num_edges_in_graph). Used to handle batching and dimensions during message
+            assing.
+
+        edge_weight : Tensor, optional
+            Tensor of shape `(num_edges,)` representing the weights of each edge, used
+            in the message aggregation step. If None, each edge is assigned a default
+            weight of 1.
+
+        Returns:
+        -------
+        output : Tensor
+            Output tensor of shape `(batch_size, num_nodes, output_dim)`, containing the updated node embeddings after message passing and aggregation. The output reflects the combined effects of relation-specific message propagation and boundary conditions.
+
+        Notes:
+        ------
+        - If `dependent=True`, the relation embeddings are computed based on the `query` input through a linear transformation (`relation_linear`). Otherwise, an independent embedding matrix for each relation is used.
+        - The function performs message passing using the propagate function, where the initial boundary conditions are included in the message computation to stabilize the node states.
+        - This forward function is designed to support custom message and aggregation functions, as specified by the `message_func` and `aggregate_func` parameters.
+        """
+
         batch_size = len(query)
 
         if self.dependent:
             # layer-specific relation features as a projection of input "query" (relation) embeddings
-            relation = self.relation_linear(query).view(batch_size, self.num_relation, self.input_dim)
+            relation = self.relation_linear(query).view(
+                batch_size, self.num_relation, self.input_dim
+            )
         else:
             # layer-specific relation features as a special embedding matrix unique to each layer
             relation = self.relation.weight.expand(batch_size, -1, -1)
@@ -67,15 +133,24 @@ class GeneralizedRelationalConv(MessagePassing):
 
         # note that we send the initial boundary condition (node states at layer0) to the message passing
         # correspond to Eq.6 on p5 in https://arxiv.org/pdf/2106.06935.pdf
-        output = self.propagate(edge_index=edge_index, input=input, relation=relation, boundary=boundary,
-                                edge_type=edge_type, size=size, edge_weight=edge_weight)
+        output = self.propagate(
+            edge_index=edge_index,
+            input=input,
+            relation=relation,
+            boundary=boundary,
+            edge_type=edge_type,
+            size=size,
+            edge_weight=edge_weight,
+        )
         return output
 
     def propagate(self, edge_index, size=None, **kwargs):
         if kwargs["edge_weight"].requires_grad or self.message_func == "rotate":
             # the rspmm cuda kernel only works for TransE and DistMult message functions
             # otherwise we invoke separate message & aggregate functions
-            return super(GeneralizedRelationalConv, self).propagate(edge_index, size, **kwargs)
+            return super(GeneralizedRelationalConv, self).propagate(
+                edge_index, size, **kwargs
+            )
 
         for hook in self._propagate_forward_pre_hooks.values():
             res = hook(self, (edge_index, size, kwargs))
@@ -83,8 +158,7 @@ class GeneralizedRelationalConv(MessagePassing):
                 edge_index, size, kwargs = res
 
         size = self.__check_input__(edge_index, size)
-        coll_dict = self.__collect__(self.__fused_user_args__, edge_index,
-                                     size, kwargs)
+        coll_dict = self.__collect__(self.__fused_user_args__, edge_index, size, kwargs)
 
         msg_aggr_kwargs = self.inspector.distribute("message_and_aggregate", coll_dict)
         for hook in self._message_and_aggregate_forward_pre_hooks.values():
@@ -117,9 +191,13 @@ class GeneralizedRelationalConv(MessagePassing):
             if max_index >= relation.shape[self.node_dim]:
                 # print(relation.shape)
                 # print(edge_type)
-                raise IndexError(f"Index {max_index} is out of bounds for dimension {self.node_dim} with size {relation.shape[self.node_dim]}")
+                raise IndexError(
+                    f"Index {max_index} is out of bounds for dimension {self.node_dim} with size {relation.shape[self.node_dim]}"
+                )
 
-            relation_j = relation.index_select(self.node_dim, edge_type[:, 0].to(torch.long))
+            relation_j = relation.index_select(
+                self.node_dim, edge_type[:, 0].to(torch.long)
+            )
             edgegraph_embed = self.edgegraph_mlp(edge_type[:, 1:])
             relation_j = relation_j + edgegraph_embed
         else:
@@ -138,38 +216,93 @@ class GeneralizedRelationalConv(MessagePassing):
             raise ValueError("Unknown message function `%s`" % self.message_func)
 
         # augment messages with the boundary condition
-        message = torch.cat([message, boundary], dim=self.node_dim)  # (num_edges + num_nodes, batch_size, input_dim)
+        message = torch.cat(
+            [message, boundary], dim=self.node_dim
+        )  # (num_edges + num_nodes, batch_size, input_dim)
 
         return message
 
     def aggregate(self, input, edge_weight, index, dim_size):
         # augment aggregation index with self-loops for the boundary condition
-        index = torch.cat([index, torch.arange(dim_size, device=input.device)]) # (num_edges + num_nodes,)
-        edge_weight = torch.cat([edge_weight, torch.ones(dim_size, device=input.device)])
+        index = torch.cat(
+            [index, torch.arange(dim_size, device=input.device)]
+        )  # (num_edges + num_nodes,)
+        edge_weight = torch.cat(
+            [edge_weight, torch.ones(dim_size, device=input.device)]
+        )
         shape = [1] * input.ndim
         shape[self.node_dim] = -1
         edge_weight = edge_weight.view(shape)
 
         if self.aggregate_func == "pna":
-            mean = scatter(input * edge_weight, index, dim=self.node_dim, dim_size=dim_size, reduce="mean")
-            sq_mean = scatter(input ** 2 * edge_weight, index, dim=self.node_dim, dim_size=dim_size, reduce="mean")
-            max = scatter(input * edge_weight, index, dim=self.node_dim, dim_size=dim_size, reduce="max")
-            min = scatter(input * edge_weight, index, dim=self.node_dim, dim_size=dim_size, reduce="min")
-            std = (sq_mean - mean ** 2).clamp(min=self.eps).sqrt()
-            features = torch.cat([mean.unsqueeze(-1), max.unsqueeze(-1), min.unsqueeze(-1), std.unsqueeze(-1)], dim=-1)
+            mean = scatter(
+                input * edge_weight,
+                index,
+                dim=self.node_dim,
+                dim_size=dim_size,
+                reduce="mean",
+            )
+            sq_mean = scatter(
+                input**2 * edge_weight,
+                index,
+                dim=self.node_dim,
+                dim_size=dim_size,
+                reduce="mean",
+            )
+            max = scatter(
+                input * edge_weight,
+                index,
+                dim=self.node_dim,
+                dim_size=dim_size,
+                reduce="max",
+            )
+            min = scatter(
+                input * edge_weight,
+                index,
+                dim=self.node_dim,
+                dim_size=dim_size,
+                reduce="min",
+            )
+            std = (sq_mean - mean**2).clamp(min=self.eps).sqrt()
+            features = torch.cat(
+                [
+                    mean.unsqueeze(-1),
+                    max.unsqueeze(-1),
+                    min.unsqueeze(-1),
+                    std.unsqueeze(-1),
+                ],
+                dim=-1,
+            )
             features = features.flatten(-2)
             degree_out = degree(index, dim_size).unsqueeze(0).unsqueeze(-1)
             scale = degree_out.log()
             scale = scale / scale.mean()
-            scales = torch.cat([torch.ones_like(scale), scale, 1 / scale.clamp(min=1e-2)], dim=-1)
+            scales = torch.cat(
+                [torch.ones_like(scale), scale, 1 / scale.clamp(min=1e-2)], dim=-1
+            )
             output = (features.unsqueeze(-1) * scales.unsqueeze(-2)).flatten(-2)
         else:
-            output = scatter(input * edge_weight, index, dim=self.node_dim, dim_size=dim_size,
-                             reduce=self.aggregate_func)
+            output = scatter(
+                input * edge_weight,
+                index,
+                dim=self.node_dim,
+                dim_size=dim_size,
+                reduce=self.aggregate_func,
+            )
 
         return output
 
-    def message_and_aggregate(self, edge_index, input, relation, boundary, edge_type, edge_weight, index, dim_size):
+    def message_and_aggregate(
+        self,
+        edge_index,
+        input,
+        relation,
+        boundary,
+        edge_type,
+        edge_weight,
+        index,
+        dim_size,
+    ):
         # fused computation of message and aggregate steps with the custom rspmm cuda kernel
         # speed up computation by several times
         # reduce memory complexity from O(|E|d) to O(|V|d), so we can apply it to larger graphs
@@ -186,33 +319,64 @@ class GeneralizedRelationalConv(MessagePassing):
         else:
             raise ValueError("Unknown message function `%s`" % self.message_func)
         if self.aggregate_func == "sum":
-            update = generalized_rspmm(edge_index, edge_type, edge_weight, relation, input, sum="add", mul=mul)
+            update = generalized_rspmm(
+                edge_index, edge_type, edge_weight, relation, input, sum="add", mul=mul
+            )
             update = update + boundary
         elif self.aggregate_func == "mean":
-            update = generalized_rspmm(edge_index, edge_type, edge_weight, relation, input, sum="add", mul=mul)
+            update = generalized_rspmm(
+                edge_index, edge_type, edge_weight, relation, input, sum="add", mul=mul
+            )
             update = (update + boundary) / degree_out
         elif self.aggregate_func == "max":
-            update = generalized_rspmm(edge_index, edge_type, edge_weight, relation, input, sum="max", mul=mul)
+            update = generalized_rspmm(
+                edge_index, edge_type, edge_weight, relation, input, sum="max", mul=mul
+            )
             update = torch.max(update, boundary)
         elif self.aggregate_func == "pna":
             # we use PNA with 4 aggregators (mean / max / min / std)
             # and 3 scalars (identity / log degree / reciprocal of log degree)
-            sum = generalized_rspmm(edge_index, edge_type, edge_weight, relation, input, sum="add", mul=mul)
-            sq_sum = generalized_rspmm(edge_index, edge_type, edge_weight, relation ** 2, input ** 2, sum="add",
-                                       mul=mul)
-            max = generalized_rspmm(edge_index, edge_type, edge_weight, relation, input, sum="max", mul=mul)
-            min = generalized_rspmm(edge_index, edge_type, edge_weight, relation, input, sum="min", mul=mul)
+            sum = generalized_rspmm(
+                edge_index, edge_type, edge_weight, relation, input, sum="add", mul=mul
+            )
+            sq_sum = generalized_rspmm(
+                edge_index,
+                edge_type,
+                edge_weight,
+                relation**2,
+                input**2,
+                sum="add",
+                mul=mul,
+            )
+            max = generalized_rspmm(
+                edge_index, edge_type, edge_weight, relation, input, sum="max", mul=mul
+            )
+            min = generalized_rspmm(
+                edge_index, edge_type, edge_weight, relation, input, sum="min", mul=mul
+            )
             mean = (sum + boundary) / degree_out
-            sq_mean = (sq_sum + boundary ** 2) / degree_out
+            sq_mean = (sq_sum + boundary**2) / degree_out
             max = torch.max(max, boundary)
-            min = torch.min(min, boundary) # (node, batch_size * input_dim)
-            std = (sq_mean - mean ** 2).clamp(min=self.eps).sqrt()
-            features = torch.cat([mean.unsqueeze(-1), max.unsqueeze(-1), min.unsqueeze(-1), std.unsqueeze(-1)], dim=-1)
-            features = features.flatten(-2) # (node, batch_size * input_dim * 4)
+            min = torch.min(min, boundary)  # (node, batch_size * input_dim)
+            std = (sq_mean - mean**2).clamp(min=self.eps).sqrt()
+            features = torch.cat(
+                [
+                    mean.unsqueeze(-1),
+                    max.unsqueeze(-1),
+                    min.unsqueeze(-1),
+                    std.unsqueeze(-1),
+                ],
+                dim=-1,
+            )
+            features = features.flatten(-2)  # (node, batch_size * input_dim * 4)
             scale = degree_out.log()
             scale = scale / scale.mean()
-            scales = torch.cat([torch.ones_like(scale), scale, 1 / scale.clamp(min=1e-2)], dim=-1) # (node, 3)
-            update = (features.unsqueeze(-1) * scales.unsqueeze(-2)).flatten(-2) # (node, batch_size * input_dim * 4 * 3)
+            scales = torch.cat(
+                [torch.ones_like(scale), scale, 1 / scale.clamp(min=1e-2)], dim=-1
+            )  # (node, 3)
+            update = (features.unsqueeze(-1) * scales.unsqueeze(-2)).flatten(
+                -2
+            )  # (node, batch_size * input_dim * 4 * 3)
         else:
             raise ValueError("Unknown aggregation function `%s`" % self.aggregate_func)
 

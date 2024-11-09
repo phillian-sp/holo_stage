@@ -19,10 +19,6 @@ from dataclasses import dataclass, field
 from typing import List
 from collections import defaultdict
 
-# to add reproducibility
-# import os
-# os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
 
 separator = ">" * 30
 line = "-" * 30
@@ -52,9 +48,7 @@ def calculate_metrics(ranking, num_negatives, metric):
                     / math.factorial(num_sample - i - 1)
                 )
                 score += (
-                    num_comb
-                    * (fp_rate**i)
-                    * ((1 - fp_rate) ** (num_sample - i - 1))
+                    num_comb * (fp_rate**i) * ((1 - fp_rate) ** (num_sample - i - 1))
                 )
             score = score.mean()
         else:
@@ -85,7 +79,7 @@ class MainConfig:
     metric: List[str] = field(default_factory=lambda: METRIC)
 
     # Model cfg
-    nbf: EdgeGraphsNBFNetConfig = field(default_factory=EdgeGraphsNBFNetConfig)
+    edgegraph: EdgeGraphsNBFNetConfig = field(default_factory=EdgeGraphsNBFNetConfig)
 
     # Dataset cfg
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
@@ -210,8 +204,8 @@ class Workspace:
             for dataset_name, train_loader in train_loaders.items():
                 for batch in train_loader:  # for each batch in a given category
                     batch_size = batch.size(0)
-                    if hasattr(self.cfg.nbf, "edge_embed_dim"):
-                        edge_embed = self.cfg.nbf.edge_embed_dim
+                    if hasattr(self.cfg.edgegraph, "edge_embed_dim"):
+                        edge_embed = self.cfg.edgegraph.edge_embed_dim
                     else:
                         edge_embed = None
                     # batch: [batch_size, 3] -> [batch_size, num_negative+1, 3]
@@ -337,8 +331,8 @@ class Workspace:
         num_negatives = []
         for batch in test_loader:
             t_batch, h_batch = tasks.all_negative(test_data, batch)
-            if hasattr(self.cfg.nbf, "edge_embed_dim"):
-                edge_embed = self.cfg.nbf.edge_embed_dim
+            if hasattr(self.cfg.edgegraph, "edge_embed_dim"):
+                edge_embed = self.cfg.edgegraph.edge_embed_dim
             else:
                 edge_embed = None
             if filtered_data is None:
