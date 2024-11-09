@@ -48,10 +48,11 @@ class GeneralizedRelationalConv(MessagePassing):
         else:
             # relation embeddings as an independent embedding matrix per each layer
             self.relation = nn.Embedding(num_relation, input_dim)
-        
+
         # define a new mlp layer and apply it to the edgegraph_embed
         if edge_embed_dim is not None:
             self.edgegraph_mlp = nn.Linear(edge_embed_dim, input_dim)
+
     def forward(self, input, query, boundary, edge_index, edge_type, size, edge_weight=None):
         batch_size = len(query)
 
@@ -66,7 +67,7 @@ class GeneralizedRelationalConv(MessagePassing):
 
         # note that we send the initial boundary condition (node states at layer0) to the message passing
         # correspond to Eq.6 on p5 in https://arxiv.org/pdf/2106.06935.pdf
-        output = self.propagate(edge_index=edge_index, input=input, relation=relation, boundary=boundary, 
+        output = self.propagate(edge_index=edge_index, input=input, relation=relation, boundary=boundary,
                                 edge_type=edge_type, size=size, edge_weight=edge_weight)
         return output
 
@@ -111,13 +112,13 @@ class GeneralizedRelationalConv(MessagePassing):
             # Validate indices before selection
             max_index = edge_type[:, 0].max().item()
             # print(relation.shape)
-            # print(max_index)    
+            # print(max_index)
             # print(edge_type)
             if max_index >= relation.shape[self.node_dim]:
                 # print(relation.shape)
                 # print(edge_type)
                 raise IndexError(f"Index {max_index} is out of bounds for dimension {self.node_dim} with size {relation.shape[self.node_dim]}")
-            
+
             relation_j = relation.index_select(self.node_dim, edge_type[:, 0].to(torch.long))
             edgegraph_embed = self.edgegraph_mlp(edge_type[:, 1:])
             relation_j = relation_j + edgegraph_embed

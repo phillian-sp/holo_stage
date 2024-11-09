@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 from .nbfmodel import NBFNet
+from .rgcn import RGCN
 
 
 class MPNN(torch.nn.Module):
@@ -33,6 +34,85 @@ class MPNN(torch.nn.Module):
             x = bn(x).relu()
 
         return x
+
+
+@dataclass
+class EdgeGraphsRGCNConfig:
+    input_dim: int = 256
+    hidden_dims: List[int] = field(default_factory=lambda: [256] * 6)
+    message_func: str = "distmult"
+    aggregate_func: str = "pna"
+    short_cut: int = 1
+    layer_norm: int = 1
+    activation: str = "relu"
+    concat_hidden: int = 0
+    num_mlp_layer: int = 2
+    dependent: int = 0
+    remove_one_hop: int = 0
+    num_beam: int = 10
+    path_topk: int = 10
+
+    # EdgeGraphsNBFNet specific
+    edge_embed_dim: int = 256
+    edge_embed_num_layers: int = 1
+    edge_model: str = "GINEConv"
+    use_p_value: int = 1
+
+
+class EdgeGraphsRGCN(nn.Module):
+    def __init__(
+        self,
+        num_relation,
+        cfg: EdgeGraphsRGCNConfig,
+    ):
+        super().__init__()
+        self.edge_embed_dim = cfg.edge_embed_dim
+        # Create an instance of NBFNet as a member variable
+        self.nbfnet = RGCN(
+            cfg.input_dim,
+            cfg.hidden_dims,
+            num_relation,
+            cfg.edge_embed_dim,
+            cfg.activation,
+        )
+        if cfg.use_p_value:
+            edge_dim = 2
+        else:
+            edge_dim = 1
+        self.edgegraph_model = MPNN(
+            input_dim=1,
+            hidden_dim=cfg.edge_embed_dim,
+            num_layers=cfg.edge_embed_num_layers,
+            edge_model=cfg.edge_model,
+            edge_dim=edge_dim,
+        )
+        self.up_emb = torch.nn.Embedding(
+            1, cfg.edge_embed_dim
+        )  # same embedding for all user product edges
+
+        self.edge_model = cfg.edge_model
+        self.use_p_value = cfg.use_p_value
+
+    def forward(self, data, batch):
+        if data.edgegraph_edge_attr.dim() == 1:
+            data.edgegraph_edge_attr = data.edgegraph_edge_attr.unsqueeze(-1)
+        if self.edge_model == "GCNConv":
+            data.edgegraph_edge_attr = data.edgegraph_edge_attr[:, 0:1]
+        h = self.edgegraph_model(
+            data.edgegraph_x, data.edgegraph_edge_index, data.edgegraph_edge_attr
+        )
+        edgegraph_reprs = global_add_pool(h, data.edgegraph2ppedge)
+
+        num_up_edges = data.edge_index.size(-1) - edgegraph_reprs.size(0)
+        upgraph_emb = self.up_emb.weight.repeat((num_up_edges, 1))
+
+        edge_embeddings = torch.vstack([upgraph_emb, edgegraph_reprs])
+
+        data.edge_embeddings = edge_embeddings
+        data.x = None
+        # Use the NBFNet instance instead of calling super()
+        return self.nbfnet.forward(data, batch)
+
 
 
 @dataclass
