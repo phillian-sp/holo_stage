@@ -137,12 +137,9 @@ class RGCN(nn.Module):
         layer_input = boundary
 
         for layer in self.layers:
-            if separate_grad:
-                edge_weight = edge_weight.clone().requires_grad_()
-            # Bellman-Ford iteration, we send the original boundary condition in addition to the updated node states
             hidden = layer(
                 layer_input,
-                query,
+                None,
                 boundary,
                 data.edge_index,
                 data.edge_type,

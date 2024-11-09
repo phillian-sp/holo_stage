@@ -260,8 +260,8 @@ def build_dataset(cfg: MainConfig):
                 train_category=train_category,
                 feature_method="ours",
                 dataset_name=dataset_name,
-                p_value=cfg.nbf.use_p_value,
-                input_dim=cfg.nbf.input_dim,
+                p_value=cfg.edgegraph.use_p_value,
+                input_dim=cfg.edgegraph.nbf.input_dim,
             )
             print(dataset[0])
             # analyze_connected_components(dataset[0])
@@ -287,8 +287,8 @@ def build_dataset(cfg: MainConfig):
                 feature_method="ours",
                 mode="test",
                 dataset_name=dataset_name,
-                p_value=cfg.nbf.use_p_value,
-                input_dim=cfg.nbf.input_dim,
+                p_value=cfg.edgegraph.use_p_value,
+                input_dim=cfg.edgegraph.nbf.input_dim,
             )
 
             print(dataset[0])
