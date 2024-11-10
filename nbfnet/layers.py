@@ -21,7 +21,7 @@ class GeneralizedRelationalConv(MessagePassing):
         input_dim,
         output_dim,
         num_relation,
-        query_input_dim,
+        query_dim,
         message_func="distmult",
         aggregate_func="pna",
         layer_norm=False,
@@ -33,7 +33,7 @@ class GeneralizedRelationalConv(MessagePassing):
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.num_relation = num_relation
-        self.query_input_dim = query_input_dim
+        self.query_dim = query_dim
         self.message_func = message_func
         self.aggregate_func = aggregate_func
         self.dependent = dependent
@@ -55,7 +55,7 @@ class GeneralizedRelationalConv(MessagePassing):
 
         if dependent:
             # obtain relation embeddings as a projection of the query relation
-            self.relation_linear = nn.Linear(query_input_dim, num_relation * input_dim)
+            self.relation_linear = nn.Linear(query_dim, num_relation * input_dim)
         else:
             # relation embeddings as an independent embedding matrix per each layer
             self.relation = nn.Embedding(num_relation, input_dim)
@@ -115,13 +115,22 @@ class GeneralizedRelationalConv(MessagePassing):
 
     def message(
         self,
-        input_j: torch.Tensor,
-        relation: torch.Tensor,
-        boundary: torch.Tensor,
-        edge_type: torch.Tensor,
+        input_j: torch.Tensor,  # (batch_size, num_edges, input_dim) second node states
+        relation: torch.Tensor,  # (batch_size, num_edges, input_dim) relation embeddings
+        boundary: torch.Tensor,  # (num_nodes, batch_size, input_dim) node states at the start of the message passing
+        edge_type: torch.Tensor,  # (num_edges, 1+edge_dim) edge attributes
     ):
-        print("input_j", input_j.shape)
-        print("node_dim", self.node_dim)
+        """
+        Args:
+            input_j: node states at the previous layer (batch_size, num_edges, input_dim)
+            relation: relation embeddings for each edge type (batch_size, num_relation, input_dim)
+            boundary: node states at the start of the message passing (num_nodes, batch_size, input_dim)
+            edge_type: edge types edge_type[:, 0] is the relation index, edge_type[:, 1:] is the edge attribute
+
+        Returns:
+            message: messages passed from the source nodes to the target nodes (batch_size, num_edges + num_nodes, input_dim)
+        """
+        # here node_dim is -2
         if self.edge_embed_dim is not None:
             edge_type_idx = edge_type[:, 0].to(torch.long)
             relation_j = relation.index_select(self.node_dim, edge_type_idx)
@@ -145,11 +154,21 @@ class GeneralizedRelationalConv(MessagePassing):
         # augment messages with the boundary condition
         # (batch_size, num_edges + num_nodes, input_dim)
         message = torch.cat([message, boundary], dim=self.node_dim)
-        print("message", message.shape)
 
         return message
 
     def aggregate(self, input, edge_weight, index, dim_size):
+        """
+        Args:
+            input: messages passed from the source nodes to the target nodes (batch_size, num_edges + num_nodes, input_dim)
+                   + num_nodes for self-loops with the boundary condition
+            edge_weight: edge weights (num_edges,)
+            index: node indices of the first node in each edge (num_edges,)
+            dim_size: number of nodes
+
+        Returns:
+            output: aggregated messages (batch_size, num_nodes, output_dim)
+        """
         # augment aggregation index with self-loops for the boundary condition
         index = torch.cat(
             [index, torch.arange(dim_size, device=input.device)]
@@ -162,6 +181,7 @@ class GeneralizedRelationalConv(MessagePassing):
         edge_weight = edge_weight.view(shape)
 
         if self.aggregate_func == "pna":
+            # mean: (batch_size, num_nodes, input_dim)
             mean = scatter(
                 input * edge_weight,
                 index,
@@ -191,6 +211,7 @@ class GeneralizedRelationalConv(MessagePassing):
                 reduce="min",
             )
             std = (sq_mean - mean**2).clamp(min=self.eps).sqrt()
+            # features: (batch_size, num_nodes, input_dim, 4)
             features = torch.cat(
                 [
                     mean.unsqueeze(-1),
@@ -200,13 +221,16 @@ class GeneralizedRelationalConv(MessagePassing):
                 ],
                 dim=-1,
             )
+            # features: (batch_size, num_nodes, input_dim * 4)
             features = features.flatten(-2)
             degree_out = degree(index, dim_size).unsqueeze(0).unsqueeze(-1)
             scale = degree_out.log()
             scale = scale / scale.mean()
+            # scales: (1, num_nodes, 3)
             scales = torch.cat(
                 [torch.ones_like(scale), scale, 1 / scale.clamp(min=1e-2)], dim=-1
             )
+            # output: (batch_size, num_nodes, input_dim * 4 * 3)
             output = (features.unsqueeze(-1) * scales.unsqueeze(-2)).flatten(-2)
         else:
             output = scatter(
@@ -220,6 +244,14 @@ class GeneralizedRelationalConv(MessagePassing):
         return output
 
     def update(self, update, input):
+        """
+        Args:
+            update: aggregated messages (batch_size, num_nodes, input_dim * 4 * 3)
+            input: node states at the previous layer (batch_size, num_nodes, input_dim)
+
+        Returns:
+            output: updated node states (batch_size, num_nodes, output_dim)
+        """
         # node update as a function of old states (input) and this layer output (update)
         output = self.linear(torch.cat([input, update], dim=-1))
         if self.layer_norm:
@@ -320,6 +352,7 @@ class GeneralizedRelationalConv(MessagePassing):
         return update
 
     def propagate(self, edge_index, size=None, **kwargs):
+
         if kwargs["edge_weight"].requires_grad or self.message_func == "rotate":
             # the rspmm cuda kernel only works for TransE and DistMult message functions
             # otherwise we invoke separate message & aggregate functions
@@ -355,3 +388,217 @@ class GeneralizedRelationalConv(MessagePassing):
                 out = res
 
         return out
+
+
+class RGCNConv(MessagePassing):
+    eps = 1e-6
+
+    def __init__(
+        self,
+        input_dim,
+        output_dim,
+        num_relation,
+        message_func="distmult",
+        aggregate_func="pna",
+        layer_norm=False,
+        activation="relu",
+        edge_embed_dim=None,
+    ):
+        super(GeneralizedRelationalConv, self).__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.num_relation = num_relation
+        self.message_func = message_func
+        self.aggregate_func = aggregate_func
+        self.edge_embed_dim = edge_embed_dim
+
+        if layer_norm:
+            self.layer_norm = nn.LayerNorm(output_dim)
+        else:
+            self.layer_norm = None
+        if isinstance(activation, str):
+            self.activation = getattr(F, activation)
+        else:
+            self.activation = activation
+
+        if self.aggregate_func == "pna":
+            self.linear = nn.Linear(input_dim * 12, output_dim)
+        else:
+            self.linear = nn.Linear(input_dim, output_dim)
+
+        self.relation = nn.Embedding(num_relation, input_dim)
+
+        # define a new mlp layer and apply it to the edgegraph_embed
+        if edge_embed_dim is not None:
+            self.edgegraph_mlp = nn.Linear(edge_embed_dim, input_dim)
+
+    def forward(
+        self,
+        input: torch.Tensor,  # (batch_size, num_nodes, input_dim)
+        edge_index: torch.Tensor,  # (2, num_edges)
+        edge_type: torch.Tensor,  # (num_edges, 1+edge_dim)
+        edge_weight: torch.Tensor,  # (num_edges,)
+    ):
+        """
+        Args:
+            input: node states at the previous layer (batch_size, num_nodes, input_dim)
+            query: query relation embeddings (batch_size, input_dim)
+            boundary: node states at the start of the message passing (num_nodes, batch_size, input_dim)
+            edge_index: edge indices (2, num_edges)
+            edge_type: edge types edge_type[:, 0] is the relation index, edge_type[:, 1:] is the edge attribute
+            size: size of the graph (num_nodes, num_nodes)
+            edge_weight: edge weights (num_edges,)
+
+        Returns:
+            output: updated node states (batch_size, num_nodes, output_dim)
+        """
+        batch_size, num_node = input.shape[:2]
+        relation = self.relation.weight.expand(batch_size, -1, -1)
+        if edge_weight is None:
+            edge_weight = torch.ones(len(edge_type), device=input.device)
+
+        output = self.propagate(
+            edge_index=edge_index,
+            input=input,
+            relation=relation,
+            edge_type=edge_type,
+            size=(num_node, num_node),
+            edge_weight=edge_weight,
+        )
+        return output
+
+    def message(
+        self,
+        input_j: torch.Tensor,  # (batch_size, num_edges, input_dim) second node states
+        relation: torch.Tensor,  # (batch_size, num_edges, input_dim) relation embeddings
+        edge_type: torch.Tensor,  # (num_edges, 1+edge_dim) edge attributes
+    ):
+        """
+        Args:
+            input_j: node states at the previous layer (batch_size, num_edges, input_dim)
+            relation: relation embeddings for each edge type (batch_size, num_relation, input_dim)
+            boundary: node states at the start of the message passing (num_nodes, batch_size, input_dim)
+            edge_type: edge types edge_type[:, 0] is the relation index, edge_type[:, 1:] is the edge attribute
+
+        Returns:
+            message: messages passed from the source nodes to the target nodes (batch_size, num_edges + num_nodes, input_dim)
+        """
+        # here node_dim is -2
+        if self.edge_embed_dim is not None:
+            edge_type_idx = edge_type[:, 0].to(torch.long)
+            relation_j = relation.index_select(self.node_dim, edge_type_idx)
+            edgegraph_embed = self.edgegraph_mlp(edge_type[:, 1:])
+            relation_j = relation_j + edgegraph_embed
+        else:
+            relation_j = relation.index_select(self.node_dim, edge_type)
+
+        if self.message_func == "transe":
+            message = input_j + relation_j
+        elif self.message_func == "distmult":
+            message = input_j * relation_j
+        elif self.message_func == "rotate":
+            x_j_re, x_j_im = input_j.chunk(2, dim=-1)
+            r_j_re, r_j_im = relation_j.chunk(2, dim=-1)
+            message_re = x_j_re * r_j_re - x_j_im * r_j_im
+            message_im = x_j_re * r_j_im + x_j_im * r_j_re
+            message = torch.cat([message_re, message_im], dim=-1)
+        else:
+            raise ValueError("Unknown message function `%s`" % self.message_func)
+
+        return message
+
+    def aggregate(self, input, edge_weight, index, dim_size):
+        """
+        Args:
+            input: messages passed from the source nodes to the target nodes (batch_size, num_edges + num_nodes, input_dim)
+                   + num_nodes for self-loops with the boundary condition
+            edge_weight: edge weights (num_edges,)
+            index: node indices of the first node in each edge (num_edges,)
+            dim_size: number of nodes
+
+        Returns:
+            output: aggregated messages (batch_size, num_nodes, output_dim)
+        """
+        shape = [1] * input.ndim
+        shape[self.node_dim] = -1
+        edge_weight = edge_weight.view(shape)
+
+        if self.aggregate_func == "pna":
+            # mean: (batch_size, num_nodes, input_dim)
+            mean = scatter(
+                input * edge_weight,
+                index,
+                dim=self.node_dim,
+                dim_size=dim_size,
+                reduce="mean",
+            )
+            sq_mean = scatter(
+                input**2 * edge_weight,
+                index,
+                dim=self.node_dim,
+                dim_size=dim_size,
+                reduce="mean",
+            )
+            max = scatter(
+                input * edge_weight,
+                index,
+                dim=self.node_dim,
+                dim_size=dim_size,
+                reduce="max",
+            )
+            min = scatter(
+                input * edge_weight,
+                index,
+                dim=self.node_dim,
+                dim_size=dim_size,
+                reduce="min",
+            )
+            std = (sq_mean - mean**2).clamp(min=self.eps).sqrt()
+            # features: (batch_size, num_nodes, input_dim, 4)
+            features = torch.cat(
+                [
+                    mean.unsqueeze(-1),
+                    max.unsqueeze(-1),
+                    min.unsqueeze(-1),
+                    std.unsqueeze(-1),
+                ],
+                dim=-1,
+            )
+            # features: (batch_size, num_nodes, input_dim * 4)
+            features = features.flatten(-2)
+            degree_out = degree(index, dim_size).unsqueeze(0).unsqueeze(-1)
+            scale = degree_out.log()
+            scale = scale / scale.mean()
+            # scales: (1, num_nodes, 3)
+            scales = torch.cat(
+                [torch.ones_like(scale), scale, 1 / scale.clamp(min=1e-2)], dim=-1
+            )
+            # output: (batch_size, num_nodes, input_dim * 4 * 3)
+            output = (features.unsqueeze(-1) * scales.unsqueeze(-2)).flatten(-2)
+        else:
+            output = scatter(
+                input * edge_weight,
+                index,
+                dim=self.node_dim,
+                dim_size=dim_size,
+                reduce=self.aggregate_func,
+            )
+
+        return output
+
+    def update(self, update, input):
+        """
+        Args:
+            update: aggregated messages (batch_size, num_nodes, input_dim * 4 * 3)
+            input: node states at the previous layer (batch_size, num_nodes, input_dim)
+
+        Returns:
+            output: updated node states (batch_size, num_nodes, output_dim)
+        """
+        # node update as a function of old states (input) and this layer output (update)
+        output = self.linear(torch.cat([input, update], dim=-1))
+        if self.layer_norm:
+            output = self.layer_norm(output)
+        if self.activation:
+            output = self.activation(output)
+        return output

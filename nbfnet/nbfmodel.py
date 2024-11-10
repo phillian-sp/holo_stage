@@ -182,7 +182,14 @@ class NBFNet(nn.Module):
         }
 
     def forward(self, data, batch):
+        """
+        args:
+            data: PyG Data object with edge indices, edge types, and optional edge attributes
+            batch: Tensor of shape [batch_size, num_negative + 1, 3] containing source, relation, and target
 
+        returns:
+            score: Tensor of shape [batch_size, num_negative + 1] containing the probability logit for each tail node in the batch
+        """
         h_index, t_index, r_index = batch.unbind(-1)
         if self.training:
             # Edge dropout in the training mode

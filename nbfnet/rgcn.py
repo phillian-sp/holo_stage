@@ -7,64 +7,6 @@ from typing import List
 from . import layers
 
 
-# class RGCNLayer(MessagePassing):
-#     def __init__(
-#         self,
-#         input_dim,
-#         output_dim,
-#         num_relation,
-#         edge_embed_dim=None,
-#         activation="relu",
-#     ):
-#         super(RGCNLayer, self).__init__(
-#             aggr="add"
-#         )  # Define the aggregation method here
-#         self.input_dim = input_dim
-#         self.output_dim = output_dim
-#         self.num_relation = num_relation
-#         self.edge_embed_dim = edge_embed_dim
-
-#         # Node and relation transformations
-#         self.node_transform = nn.Linear(input_dim, output_dim)
-#         self.relation_embed = nn.Embedding(num_relation, output_dim)
-
-#         # Edge embedding transformation if edge embeddings are used
-#         if edge_embed_dim is not None:
-#             self.edge_transform = nn.Linear(edge_embed_dim, output_dim)
-
-#         # Activation function
-#         if isinstance(activation, str):
-#             self.activation = getattr(torch.nn.functional, activation)
-#         else:
-#             self.activation = activation
-
-#     def forward(self, x, edge_index, edge_type, edge_attr=None):
-#         # Transform node features
-#         x = self.node_transform(x)
-
-#         # Propagate messages
-#         out = self.propagate(edge_index, x=x, edge_type=edge_type, edge_attr=edge_attr)
-
-#         # Apply activation function if specified
-#         if self.activation:
-#             out = self.activation(out)
-
-#         return out
-
-#     def message(self, x_j, edge_type, edge_attr):
-#         # Get relation embedding for each edge
-#         rel_embedding = self.relation_embed(edge_type)
-
-#         # Incorporate edge attributes if they exist
-#         if self.edge_embed_dim is not None and edge_attr is not None:
-#             edge_embedding = self.edge_transform(edge_attr)
-#             rel_embedding += edge_embedding
-
-#         # Compute the message as a combination of node and relation embeddings
-#         message = x_j + rel_embedding
-#         return message
-
-
 @dataclass
 class RGCNConfig:
     input_dim: int = 256
@@ -75,7 +17,7 @@ class RGCNConfig:
     layer_norm: int = 1
     activation: str = "relu"
     concat_hidden: int = 0
-    num_mlp_layer: int = 2
+    # num_mlp_layer: int = 1
     dependent: int = 0
 
 
@@ -99,16 +41,14 @@ class RGCN(nn.Module):
         self.layers = nn.ModuleList()
         for i in range(len(self.dims) - 1):
             self.layers.append(
-                layers.GeneralizedRelationalConv(
+                layers.RGCNConv(
                     self.dims[i],
                     self.dims[i + 1],
                     num_relation,
-                    self.dims[0],
                     cfg.message_func,
                     cfg.aggregate_func,
                     cfg.layer_norm,
                     cfg.activation,
-                    cfg.dependent,
                     edge_embed_dim=edge_embed_dim,
                 )
             )
@@ -116,68 +56,59 @@ class RGCN(nn.Module):
         feature_dim = sum(cfg.hidden_dims) if cfg.concat_hidden else cfg.hidden_dims[-1]
         feature_dim += cfg.input_dim
 
-        # additional relation embedding which serves as an initial 'query' for the NBFNet forward pass
-        # each layer has its own learnable relations matrix, so we send the total number of relations, too
-        self.query = nn.Embedding(num_relation, cfg.input_dim)
-        self.mlp = nn.Sequential()
-        mlp = []
-        for i in range(cfg.num_mlp_layer - 1):
-            mlp.append(nn.Linear(feature_dim, feature_dim))
-            mlp.append(nn.ReLU())
-        mlp.append(nn.Linear(feature_dim, 1))
-        self.mlp = nn.Sequential(*mlp)
+        self.relation_emb = nn.Embedding(num_relation, cfg.hidden_dims[-1])
+        # Final linear layer if concatenating hidden layers
+        if self.concat_hidden:
+            self.final_linear = nn.Linear(feature_dim, cfg.hidden_dims[-1])
 
     def forward(self, data, batch):
         """
-        data: PyG Data object with node features, edge indices, edge types, and optional edge attributes
-        batch: Tensor h
+        data: PyG Data object with edge indices, edge types, and optional edge attributes
+        batch: Tensor of shape [batch_size, num_negative + 1, 3] containing source, relation, and target nodes
         """
+        x = torch.rand(
+            (data.num_nodes, self.layers[0].input_dim), device=data.edge_index.device
+        )
+        edge_index = data.edge_index  # edge indices of shape [2, num_edges]
+        edge_type = data.edge_type  # edge types of shape [num_edges]
+        edge_weight = (
+            data.edge_weight if hasattr(data, "edge_weight") else None
+        )  # optional edge weights
 
-        hiddens = []
-        layer_input = boundary
+        hidden_states = []  # To store each layer's output if concat_hidden is enabled
 
+        # Pass through each RGCN layer
         for layer in self.layers:
-            hidden = layer(
-                layer_input,
-                None,
-                boundary,
-                data.edge_index,
-                data.edge_type,
-                size,
-                edge_weight,
-            )
-            if self.short_cut and hidden.shape == layer_input.shape:
-                # residual connection here
-                hidden = hidden + layer_input
-            hiddens.append(hidden)
-            edge_weights.append(edge_weight)
-            layer_input = hidden
+            new_x = layer(x, edge_index, edge_type, edge_weight)
 
-        # Get the scores for each triplet in batch
-        batch_size, num_negatives_plus_one, _ = batch.size()
-        source_nodes = batch[:, :, 0].view(
-            -1
-        )  # Flatten to shape [batch_size * (num_negative + 1)]
-        relations = batch[:, :, 1].view(-1)
-        target_nodes = batch[:, :, 2].view(-1)
+            if self.short_cut:
+                new_x = new_x + x  # Adding the shortcut connection
 
-        # Retrieve node embeddings and relation embeddings for the batch
-        source_embeddings = x[
-            source_nodes
-        ]  # Shape: [batch_size * (num_negative + 1), output_dim]
-        relation_embeddings = self.relation_transform(
+            x = new_x  # Update x to the new layer output
+            hidden_states.append(x)  # Store for concat_hidden
+
+        # If concatenating hidden states, combine them along the last dimension
+        if self.concat_hidden:
+            x = torch.cat(hidden_states, dim=-1)  # Concatenate along feature dimension
+            x = self.final_linear(x)  # Reduce concatenated features to output dimension
+
+        # Extract embeddings for each node involved in the triples in `batch`
+        source_nodes = batch[:, :, 0]
+        relations = batch[:, :, 1]
+        target_nodes = batch[:, :, 2]
+
+        # Gather node and relation embeddings
+        source_emb = x[source_nodes]  # shape [batch_size, num_negative + 1, output_dim]
+        relation_emb = self.relation_emb(
             relations
-        )  # Shape: [batch_size * (num_negative + 1), output_dim]
-        target_embeddings = x[
-            target_nodes
-        ]  # Shape: [batch_size * (num_negative + 1), output_dim]
+        )  # use RGCN-level relation embeddings
+        target_emb = x[target_nodes]  # shape [batch_size, num_negative + 1, output_dim]
 
-        # Compute link prediction scores (e.g., DistMult or TransE scoring function)
-        scores = (source_embeddings * relation_embeddings * target_embeddings).sum(
-            dim=-1
-        )  # DistMult scoring
-        scores = scores.view(
-            batch_size, num_negatives_plus_one
-        )  # Reshape to [batch_size, num_negative + 1]
+        # Compute score for each (source, relation, target) triple
+        score = torch.sum(
+            source_emb * relation_emb * target_emb, dim=-1
+        )  # shape [batch_size, num_negative + 1]
+
+        return score
 
         return scores
