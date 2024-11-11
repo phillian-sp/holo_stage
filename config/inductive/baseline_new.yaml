@@ -30,7 +30,7 @@ dataset:
   # all available categories under HM dataset: hm
 
 edgegraph:
-  final_model: nbf
+  final_model: rgcn
   nbf:
     input_dim: 256 # node feature dimension
     hidden_dims: [256, 256, 256, 256, 256, 256]
@@ -42,8 +42,7 @@ edgegraph:
   rgcn:
     input_dim: 256
     hidden_dims: [256, 256, 256, 256, 256, 256]
-    message_func: distmult
-    aggregate_func: pna
+    aggregate_func: mean
     short_cut: yes
     layer_norm: yes
     dependent: no

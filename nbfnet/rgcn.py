@@ -11,8 +11,7 @@ from . import layers
 class RGCNConfig:
     input_dim: int = 256
     hidden_dims: List[int] = field(default_factory=lambda: [256] * 6)
-    message_func: str = "distmult"
-    aggregate_func: str = "pna"
+    aggregate_func: str = "mean"
     short_cut: int = 1
     layer_norm: int = 1
     activation: str = "relu"
@@ -45,7 +44,6 @@ class RGCN(nn.Module):
                     self.dims[i],
                     self.dims[i + 1],
                     num_relation,
-                    cfg.message_func,
                     cfg.aggregate_func,
                     cfg.layer_norm,
                     cfg.activation,
@@ -61,7 +59,7 @@ class RGCN(nn.Module):
         if self.concat_hidden:
             self.final_linear = nn.Linear(feature_dim, cfg.hidden_dims[-1])
 
-    def forward(self, data, batch):
+    def forward(self, data: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
         """
         data: PyG Data object with edge indices, edge types, and optional edge attributes
         batch: Tensor of shape [batch_size, num_negative + 1, 3] containing source, relation, and target nodes
@@ -70,16 +68,16 @@ class RGCN(nn.Module):
             data.edge_type = torch.cat(
                 [data.original_edge_type.unsqueeze(-1), data.edge_embeddings], dim=-1
             )
-        x = torch.rand(
-            (data.num_nodes, self.layers[0].input_dim), device=data.edge_index.device
+        # x = torch.rand(
+        #     (data.num_nodes, self.layers[0].input_dim), device=data.edge_index.device
+        # )
+        # make x constant
+        x = torch.ones(
+            (1, data.num_nodes, self.layers[0].input_dim), device=data.edge_index.device
         )
-        # repeat the input feature for each batch
-        x = x.unsqueeze(0).expand(batch.size(0), -1, -1)
         edge_index = data.edge_index  # edge indices of shape [2, num_edges]
         edge_type = data.edge_type  # edge types of shape [num_edges]
-        edge_weight = (
-            data.edge_weight if hasattr(data, "edge_weight") else None
-        )  # optional edge weights
+        edge_weight = data.edge_weight if hasattr(data, "edge_weight") else None
 
         hidden_states = []  # To store each layer's output if concat_hidden is enabled
 
@@ -98,17 +96,23 @@ class RGCN(nn.Module):
             x = torch.cat(hidden_states, dim=-1)  # Concatenate along feature dimension
             x = self.final_linear(x)  # Reduce concatenated features to output dimension
 
+        x = x.expand(batch.size(0), -1, -1)
+
         # Extract embeddings for each node involved in the triples in `batch`
-        source_nodes = batch[:, :, 0]
+        source_nodes = batch[:, :, 0].unsqueeze(-1).expand(-1, -1, x.size(-1))
+        target_nodes = batch[:, :, 1].unsqueeze(-1).expand(-1, -1, x.size(-1))
         relations = batch[:, :, 2]
-        target_nodes = batch[:, :, 1]
         # Gather node and relation embeddings
-        source_emb = x.gather(1, source_nodes.unsqueeze(-1).expand(-1, -1, x.size(-1)))
+        source_emb = x.gather(1, source_nodes)
+        target_emb = x.gather(1, target_nodes)
         relation_emb = self.relation_emb(relations)
-        target_emb = x.gather(1, target_nodes.unsqueeze(-1).expand(-1, -1, x.size(-1)))
 
         # Compute score for each (source, relation, target) triple
         # score: [batch_size, num_negative + 1]
         score = torch.sum(source_emb * relation_emb * target_emb, dim=-1)
+
+        # print probability use softmax
+        prob = torch.softmax(score, dim=-1)
+        print(f"prob: {prob[:, 0].mean()}")
 
         return score

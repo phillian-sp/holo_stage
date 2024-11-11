@@ -218,7 +218,7 @@ class Workspace:
                     )
                     # pred: [batch_size, num_negative+1]
                     pred = self.model(self.train_data_dict[dataset_name], batch)
-                    print(f"pred: {pred}")
+                    # print(f"pred: {pred}")
                     # target: [batch_size, num_negative+1]
                     target = torch.zeros_like(pred)
                     target[:, 0] = 1

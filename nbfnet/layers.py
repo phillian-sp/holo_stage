@@ -399,8 +399,7 @@ class RGCNConv(MessagePassing):
         input_dim,
         output_dim,
         num_relation,
-        message_func="distmult",
-        aggregate_func="pna",
+        aggregate_func="mean",
         layer_norm=False,
         activation="relu",
         edge_embed_dim=None,
@@ -409,7 +408,6 @@ class RGCNConv(MessagePassing):
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.num_relation = num_relation
-        self.message_func = message_func
         self.aggregate_func = aggregate_func
         self.edge_embed_dim = edge_embed_dim
 
@@ -422,16 +420,15 @@ class RGCNConv(MessagePassing):
         else:
             self.activation = activation
 
-        if self.aggregate_func == "pna":
-            self.linear = nn.Linear(input_dim * 13, output_dim)
-        else:
-            self.linear = nn.Linear(input_dim * 2, output_dim)
-
-        self.relation = nn.Embedding(num_relation, input_dim)
+        self.lin_s = nn.Linear(input_dim, output_dim)
 
         # define a new mlp layer and apply it to the edgegraph_embed
         if edge_embed_dim is not None:
             self.edgegraph_mlp = nn.Linear(edge_embed_dim, input_dim)
+
+        self.lin_r = nn.ModuleList()
+        for _ in range(num_relation):
+            self.lin_r.append(nn.Linear(input_dim, input_dim))
 
     def forward(
         self,
@@ -443,8 +440,6 @@ class RGCNConv(MessagePassing):
         """
         Args:
             input: node states at the previous layer (batch_size, num_nodes, input_dim)
-            query: query relation embeddings (batch_size, input_dim)
-            boundary: node states at the start of the message passing (num_nodes, batch_size, input_dim)
             edge_index: edge indices (2, num_edges)
             edge_type: edge types edge_type[:, 0] is the relation index, edge_type[:, 1:] is the edge attribute
             size: size of the graph (num_nodes, num_nodes)
@@ -453,16 +448,22 @@ class RGCNConv(MessagePassing):
         Returns:
             output: updated node states (batch_size, num_nodes, output_dim)
         """
-        batch_size, num_node = input.shape[:2]
-        relation = self.relation.weight.expand(batch_size, -1, -1)
+        num_node = input.size(self.node_dim)
         if edge_weight is None:
             edge_weight = torch.ones(len(edge_type), device=input.device)
+
+        if self.edge_embed_dim is not None:
+            edge_type_idx = edge_type[:, 0].to(torch.long)
+            edgegraph_embed = self.edgegraph_mlp(edge_type[:, 1:])
+        else:
+            edge_type_idx = edge_type.to(torch.long)
+            edgegraph_embed = 0
 
         output = self.propagate(
             edge_index=edge_index,
             input=input,
-            relation=relation,
-            edge_type=edge_type,
+            edge_type_idx=edge_type_idx,
+            edgegraph_embed=edgegraph_embed,
             size=(num_node, num_node),
             edge_weight=edge_weight,
         )
@@ -471,8 +472,8 @@ class RGCNConv(MessagePassing):
     def message(
         self,
         input_j: torch.Tensor,  # (batch_size, num_edges, input_dim) second node states
-        relation: torch.Tensor,  # (batch_size, num_edges, input_dim) relation embeddings
-        edge_type: torch.Tensor,  # (num_edges, 1+edge_dim) edge attributes
+        edge_type_idx: torch.Tensor,  # (num_edges,) edge types
+        edgegraph_embed: torch.Tensor,  # (num_edges, input_dim) edge attributes
     ):
         """
         Args:
@@ -484,27 +485,13 @@ class RGCNConv(MessagePassing):
         Returns:
             message: messages passed from the source nodes to the target nodes (batch_size, num_edges + num_nodes, input_dim)
         """
-        # here node_dim is -2
-        if self.edge_embed_dim is not None:
-            edge_type_idx = edge_type[:, 0].to(torch.long)
-            relation_j = relation.index_select(self.node_dim, edge_type_idx)
-            edgegraph_embed = self.edgegraph_mlp(edge_type[:, 1:])
-            relation_j = relation_j + edgegraph_embed
-        else:
-            relation_j = relation.index_select(self.node_dim, edge_type)
+        message = torch.zeros_like(input_j, device=input_j.device)
+        for rel_type in range(len(self.lin_r)):
+            mask = (edge_type_idx == rel_type).unsqueeze(0).unsqueeze(-1)
+            rel_mapped = self.lin_r[rel_type](input_j)
+            message += rel_mapped * mask
 
-        if self.message_func == "transe":
-            message = input_j + relation_j
-        elif self.message_func == "distmult":
-            message = input_j * relation_j
-        elif self.message_func == "rotate":
-            x_j_re, x_j_im = input_j.chunk(2, dim=-1)
-            r_j_re, r_j_im = relation_j.chunk(2, dim=-1)
-            message_re = x_j_re * r_j_re - x_j_im * r_j_im
-            message_im = x_j_re * r_j_im + x_j_im * r_j_re
-            message = torch.cat([message_re, message_im], dim=-1)
-        else:
-            raise ValueError("Unknown message function `%s`" % self.message_func)
+        message += edgegraph_embed
 
         return message
 
@@ -524,81 +511,27 @@ class RGCNConv(MessagePassing):
         shape[self.node_dim] = -1
         edge_weight = edge_weight.view(shape)
 
-        if self.aggregate_func == "pna":
-            # mean: (batch_size, num_nodes, input_dim)
-            mean = scatter(
-                input * edge_weight,
-                index,
-                dim=self.node_dim,
-                dim_size=dim_size,
-                reduce="mean",
-            )
-            sq_mean = scatter(
-                input**2 * edge_weight,
-                index,
-                dim=self.node_dim,
-                dim_size=dim_size,
-                reduce="mean",
-            )
-            max = scatter(
-                input * edge_weight,
-                index,
-                dim=self.node_dim,
-                dim_size=dim_size,
-                reduce="max",
-            )
-            min = scatter(
-                input * edge_weight,
-                index,
-                dim=self.node_dim,
-                dim_size=dim_size,
-                reduce="min",
-            )
-            std = (sq_mean - mean**2).clamp(min=self.eps).sqrt()
-            # features: (batch_size, num_nodes, input_dim, 4)
-            features = torch.cat(
-                [
-                    mean.unsqueeze(-1),
-                    max.unsqueeze(-1),
-                    min.unsqueeze(-1),
-                    std.unsqueeze(-1),
-                ],
-                dim=-1,
-            )
-            # features: (batch_size, num_nodes, input_dim * 4)
-            features = features.flatten(-2)
-            degree_out = degree(index, dim_size).unsqueeze(0).unsqueeze(-1)
-            scale = degree_out.log()
-            print(scale)
-            scale = scale / scale.mean()
-            # scales: (1, num_nodes, 3)
-            scales = torch.cat(
-                [torch.ones_like(scale), scale, 1 / scale.clamp(min=1e-2)], dim=-1
-            )
-            # output: (batch_size, num_nodes, input_dim * 4 * 3)
-            output = (features.unsqueeze(-1) * scales.unsqueeze(-2)).flatten(-2)
-        else:
-            output = scatter(
-                input * edge_weight,
-                index,
-                dim=self.node_dim,
-                dim_size=dim_size,
-                reduce=self.aggregate_func,
-            )
+        output = scatter(
+            input * edge_weight,
+            index,
+            dim=self.node_dim,
+            dim_size=dim_size,
+            reduce=self.aggregate_func,
+        )
 
         return output
 
     def update(self, update, input):
         """
         Args:
-            update: aggregated messages (batch_size, num_nodes, input_dim * 4 * 3)
+            update: aggregated messages (batch_size, num_nodes, input_dim)
             input: node states at the previous layer (batch_size, num_nodes, input_dim)
 
         Returns:
             output: updated node states (batch_size, num_nodes, output_dim)
         """
         # node update as a function of old states (input) and this layer output (update)
-        output = self.linear(torch.cat([input, update], dim=-1))
+        output = self.lin_s(input) + update
         if self.layer_norm:
             output = self.layer_norm(output)
         if self.activation:
