@@ -60,6 +60,8 @@ class EdgeGraphsNBFNet(nn.Module):
             self.model = NBFNet(num_relation, cfg.edge_embed_dim, cfg.nbf)
         elif cfg.final_model == "rgcn":
             self.model = RGCN(num_relation, cfg.edge_embed_dim, cfg.rgcn)
+        else:
+            raise ValueError(f"Invalid final model: {cfg.final_model}")
         if cfg.use_p_value:
             edge_dim = 2
         else:
@@ -90,7 +92,6 @@ class EdgeGraphsNBFNet(nn.Module):
 
         num_up_edges = data.edge_index.size(-1) - edgegraph_reprs.size(0)
         upgraph_emb = self.up_emb.weight.repeat((num_up_edges, 1))
-
         edge_embeddings = torch.vstack([upgraph_emb, edgegraph_reprs])
 
         data.edge_embeddings = edge_embeddings

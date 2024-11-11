@@ -66,9 +66,15 @@ class RGCN(nn.Module):
         data: PyG Data object with edge indices, edge types, and optional edge attributes
         batch: Tensor of shape [batch_size, num_negative + 1, 3] containing source, relation, and target nodes
         """
+        if self.edge_embed_dim is not None:
+            data.edge_type = torch.cat(
+                [data.original_edge_type.unsqueeze(-1), data.edge_embeddings], dim=-1
+            )
         x = torch.rand(
             (data.num_nodes, self.layers[0].input_dim), device=data.edge_index.device
         )
+        # repeat the input feature for each batch
+        x = x.unsqueeze(0).expand(batch.size(0), -1, -1)
         edge_index = data.edge_index  # edge indices of shape [2, num_edges]
         edge_type = data.edge_type  # edge types of shape [num_edges]
         edge_weight = (
@@ -94,21 +100,15 @@ class RGCN(nn.Module):
 
         # Extract embeddings for each node involved in the triples in `batch`
         source_nodes = batch[:, :, 0]
-        relations = batch[:, :, 1]
-        target_nodes = batch[:, :, 2]
-
+        relations = batch[:, :, 2]
+        target_nodes = batch[:, :, 1]
         # Gather node and relation embeddings
-        source_emb = x[source_nodes]  # shape [batch_size, num_negative + 1, output_dim]
-        relation_emb = self.relation_emb(
-            relations
-        )  # use RGCN-level relation embeddings
-        target_emb = x[target_nodes]  # shape [batch_size, num_negative + 1, output_dim]
+        source_emb = x.gather(1, source_nodes.unsqueeze(-1).expand(-1, -1, x.size(-1)))
+        relation_emb = self.relation_emb(relations)
+        target_emb = x.gather(1, target_nodes.unsqueeze(-1).expand(-1, -1, x.size(-1)))
 
         # Compute score for each (source, relation, target) triple
-        score = torch.sum(
-            source_emb * relation_emb * target_emb, dim=-1
-        )  # shape [batch_size, num_negative + 1]
+        # score: [batch_size, num_negative + 1]
+        score = torch.sum(source_emb * relation_emb * target_emb, dim=-1)
 
         return score
-
-        return scores

@@ -224,6 +224,7 @@ class GeneralizedRelationalConv(MessagePassing):
             # features: (batch_size, num_nodes, input_dim * 4)
             features = features.flatten(-2)
             degree_out = degree(index, dim_size).unsqueeze(0).unsqueeze(-1)
+            print(degree_out)
             scale = degree_out.log()
             scale = scale / scale.mean()
             # scales: (1, num_nodes, 3)
@@ -404,7 +405,7 @@ class RGCNConv(MessagePassing):
         activation="relu",
         edge_embed_dim=None,
     ):
-        super(GeneralizedRelationalConv, self).__init__()
+        super(RGCNConv, self).__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.num_relation = num_relation
@@ -422,9 +423,9 @@ class RGCNConv(MessagePassing):
             self.activation = activation
 
         if self.aggregate_func == "pna":
-            self.linear = nn.Linear(input_dim * 12, output_dim)
+            self.linear = nn.Linear(input_dim * 13, output_dim)
         else:
-            self.linear = nn.Linear(input_dim, output_dim)
+            self.linear = nn.Linear(input_dim * 2, output_dim)
 
         self.relation = nn.Embedding(num_relation, input_dim)
 
@@ -568,6 +569,7 @@ class RGCNConv(MessagePassing):
             features = features.flatten(-2)
             degree_out = degree(index, dim_size).unsqueeze(0).unsqueeze(-1)
             scale = degree_out.log()
+            print(scale)
             scale = scale / scale.mean()
             # scales: (1, num_nodes, 3)
             scales = torch.cat(
