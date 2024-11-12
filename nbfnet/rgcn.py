@@ -39,7 +39,7 @@ class RGCN(nn.Module):
         self.layers = nn.ModuleList()
         for i in range(len(self.dims) - 1):
             self.layers.append(
-                layers.NewRGCNConv(
+                layers.EdgeRGCNConv(
                     self.dims[i],
                     self.dims[i + 1],
                     num_relation,
