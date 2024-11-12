@@ -28,7 +28,6 @@ class RGCN(nn.Module):
         cfg: RGCNConfig,
     ):
         super(RGCN, self).__init__()
-
         self.dims = [cfg.input_dim] + list(cfg.hidden_dims)
         self.num_relation = num_relation
         # whether to use residual connections between GNN layers
@@ -40,7 +39,7 @@ class RGCN(nn.Module):
         self.layers = nn.ModuleList()
         for i in range(len(self.dims) - 1):
             self.layers.append(
-                layers.RGCNConv(
+                layers.NewRGCNConv(
                     self.dims[i],
                     self.dims[i + 1],
                     num_relation,
@@ -55,11 +54,16 @@ class RGCN(nn.Module):
         feature_dim += cfg.input_dim
 
         self.relation_emb = nn.Embedding(num_relation, cfg.hidden_dims[-1])
+
+        nn.init.xavier_uniform_(
+            self.relation_emb.weight, gain=nn.init.calculate_gain(cfg.activation)
+        )
+
         # Final linear layer if concatenating hidden layers
         if self.concat_hidden:
             self.final_linear = nn.Linear(feature_dim, cfg.hidden_dims[-1])
 
-    def forward(self, data: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+    def forward(self, data, batch: torch.Tensor) -> torch.Tensor:
         """
         data: PyG Data object with edge indices, edge types, and optional edge attributes
         batch: Tensor of shape [batch_size, num_negative + 1, 3] containing source, relation, and target nodes
@@ -69,12 +73,10 @@ class RGCN(nn.Module):
                 [data.original_edge_type.unsqueeze(-1), data.edge_embeddings], dim=-1
             )
         # x = torch.rand(
-        #     (data.num_nodes, self.layers[0].input_dim), device=data.edge_index.device
+        #     (1, data.num_nodes, self.layers[0].input_dim), device=data.edge_index.device
         # )
         # make x constant
-        x = torch.ones(
-            (1, data.num_nodes, self.layers[0].input_dim), device=data.edge_index.device
-        )
+        x = torch.ones((1, data.num_nodes, self.dims[0]), device=data.edge_index.device)
         edge_index = data.edge_index  # edge indices of shape [2, num_edges]
         edge_type = data.edge_type  # edge types of shape [num_edges]
         edge_weight = data.edge_weight if hasattr(data, "edge_weight") else None
@@ -112,7 +114,10 @@ class RGCN(nn.Module):
         score = torch.sum(source_emb * relation_emb * target_emb, dim=-1)
 
         # print probability use softmax
-        prob = torch.softmax(score, dim=-1)
-        print(f"prob: {prob[:, 0].mean()}")
+        # prob = torch.softmax(score, dim=-1)
+        # print(f"prob: {prob[:, 0].mean()}")
+        # # print average rank of positive samples
+        # rank = torch.argsort(score, dim=-1, descending=True)
+        # print(f"rank: {torch.where(rank == 0)[1].mean()}")
 
         return score

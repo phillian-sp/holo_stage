@@ -3,7 +3,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch_scatter import scatter
 
-from torch_geometric.nn.conv import MessagePassing
+from torch_geometric.nn.conv import MessagePassing, RGCNConv
 from torch_geometric.utils import degree
 
 
@@ -391,7 +391,7 @@ class GeneralizedRelationalConv(MessagePassing):
         return out
 
 
-class RGCNConv(MessagePassing):
+class EdgeRGCNConv(MessagePassing):
     eps = 1e-6
 
     def __init__(
@@ -404,7 +404,7 @@ class RGCNConv(MessagePassing):
         activation="relu",
         edge_embed_dim=None,
     ):
-        super(RGCNConv, self).__init__()
+        super(EdgeRGCNConv, self).__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.num_relation = num_relation
@@ -424,11 +424,11 @@ class RGCNConv(MessagePassing):
 
         # define a new mlp layer and apply it to the edgegraph_embed
         if edge_embed_dim is not None:
-            self.edgegraph_mlp = nn.Linear(edge_embed_dim, input_dim)
+            self.edgegraph_mlp = nn.Linear(edge_embed_dim, output_dim)
 
         self.lin_r = nn.ModuleList()
         for _ in range(num_relation):
-            self.lin_r.append(nn.Linear(input_dim, input_dim))
+            self.lin_r.append(nn.Linear(input_dim, output_dim))
 
     def forward(
         self,
@@ -485,9 +485,13 @@ class RGCNConv(MessagePassing):
         Returns:
             message: messages passed from the source nodes to the target nodes (batch_size, num_edges + num_nodes, input_dim)
         """
-        message = torch.zeros_like(input_j, device=input_j.device)
+        batch_size, num_edges, _ = input_j.size()
+        message = torch.zeros(
+            (batch_size, num_edges, self.output_dim), device=input_j.device
+        )
         for rel_type in range(len(self.lin_r)):
             mask = (edge_type_idx == rel_type).unsqueeze(0).unsqueeze(-1)
+            # rel_mapped: (batch_size, num_edges, self.output_dim)
             rel_mapped = self.lin_r[rel_type](input_j)
             message += rel_mapped * mask
 
@@ -495,29 +499,71 @@ class RGCNConv(MessagePassing):
 
         return message
 
-    def aggregate(self, input, edge_weight, index, dim_size):
+    # def aggregate(self, input, edge_weight, index, dim_size):
+    #     """
+    #     Args:
+    #         input: messages passed from the source nodes to the target nodes (batch_size, num_edges, input_dim)
+    #         edge_weight: edge weights (num_edges,)
+    #         index: node indices of the first node in each edge (num_edges,)
+    #         dim_size: number of nodes
+
+    #     Returns:
+    #         output: aggregated messages (batch_size, num_nodes, output_dim)
+    #     """
+    #     shape = [1] * input.ndim
+    #     shape[self.node_dim] = -1
+    #     edge_weight = edge_weight.view(shape)
+
+    #     # TODO: change this
+    #     output = scatter(
+    #         input * edge_weight,
+    #         index,
+    #         dim=self.node_dim,
+    #         dim_size=dim_size,
+    #         reduce=self.aggregate_func,
+    #     )
+
+    #     return output
+
+    def aggregate(self, input, edge_weight, index, edge_type_idx, dim_size):
         """
         Args:
-            input: messages passed from the source nodes to the target nodes (batch_size, num_edges + num_nodes, input_dim)
-                   + num_nodes for self-loops with the boundary condition
+            input: messages passed from the source nodes to the target nodes (batch_size, num_edges, input_dim)
             edge_weight: edge weights (num_edges,)
             index: node indices of the first node in each edge (num_edges,)
+            edge_type_idx: edge type indices for each edge (num_edges,)
             dim_size: number of nodes
 
         Returns:
             output: aggregated messages (batch_size, num_nodes, output_dim)
         """
+        # Weighted input
         shape = [1] * input.ndim
         shape[self.node_dim] = -1
         edge_weight = edge_weight.view(shape)
+        weighted_input = input * edge_weight
 
-        output = scatter(
-            input * edge_weight,
-            index,
-            dim=self.node_dim,
-            dim_size=dim_size,
-            reduce=self.aggregate_func,
+        # Initialize the output to accumulate messages from all edge types
+        output = torch.zeros(
+            (input.size(0), dim_size, self.output_dim), device=input.device
         )
+
+        # Loop over each unique edge type
+        for rel_type in range(self.num_relation):
+            # Mask to select messages of the current edge type
+            type_mask = edge_type_idx == rel_type
+
+            # Apply the mask and perform scatter aggregation for the selected type
+            aggregated_type = scatter(
+                weighted_input[type_mask.unsqueeze(0)],
+                index[type_mask],
+                dim=self.node_dim,
+                dim_size=dim_size,
+                reduce=self.aggregate_func,
+            )
+
+            # Add the aggregated result for this type to the final output
+            output += aggregated_type
 
         return output
 
@@ -532,6 +578,107 @@ class RGCNConv(MessagePassing):
         """
         # node update as a function of old states (input) and this layer output (update)
         output = self.lin_s(input) + update
+        if self.layer_norm:
+            output = self.layer_norm(output)
+        if self.activation:
+            output = self.activation(output)
+        return output
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.nn import MessagePassing
+
+
+class NewRGCNConv(RGCNConv):
+    def __init__(
+        self,
+        input_dim,
+        output_dim,
+        num_relation,
+        aggregate_func="mean",
+        layer_norm=False,
+        activation="relu",
+        edge_embed_dim=None,
+    ):
+        super(NewRGCNConv, self).__init__(
+            in_channels=input_dim,
+            out_channels=output_dim,
+            num_relations=num_relation,
+            aggr=aggregate_func,
+            # num_bases=5,
+        )
+
+        # Parameters for edge features
+        if edge_embed_dim is not None:
+            self.edge_embed_dim = edge_embed_dim
+            self.edgegraph_mlp = nn.Linear(edge_embed_dim, output_dim)
+
+        if layer_norm:
+            self.layer_norm = nn.LayerNorm(output_dim)
+        self.activation = getattr(F, activation)
+
+        self.lin_s = nn.Linear(input_dim, output_dim)
+
+    def forward(
+        self,
+        input: torch.Tensor,  # (batch_size, num_nodes, input_dim)
+        edge_index: torch.Tensor,  # (2, num_edges)
+        edge_type: torch.Tensor,  # (num_edges, 1+edge_dim)
+        edge_weight: torch.Tensor,  # (num_edges,)
+    ):
+        """
+        x: node features [num_nodes, in_channels]
+        edge_index: edge indices [2, num_edges]
+        edge_attr: edge features [num_edges, edge_dim]
+        edge_type: edge types [num_edges,
+
+        Returns the updated node embeddings [num_nodes, out_channels]
+        """
+        num_node = input.size(self.node_dim)
+        if edge_weight is None:
+            edge_weight = torch.ones(len(edge_type), device=input.device)
+
+        if self.edge_embed_dim is not None:
+            edge_type_idx = edge_type[:, 0].to(torch.long)
+            self.edgegraph_embed = self.edgegraph_mlp(edge_type[:, 1:])
+        else:
+            edge_type_idx = edge_type.to(torch.long)
+            self.edgegraph_embed = None
+        return super().forward(input, edge_index, edge_type_idx)
+
+        # Prepare edge indices for message passing
+        # return self.propagate(
+        #     edge_index,
+        #     x=input,
+        #     edge_attr=edgegraph_embed,
+        #     edge_type=edge_type_idx,
+        # )
+
+    def message(self, x_j, edge_type_ptr):
+        """
+        x_j: Features of source nodes (neighbors)
+        edge_attr: Edge features
+        edge_type: Relation types
+        """
+        print(x_j.size())
+        message = super().message(x_j, edge_type_ptr)
+        # if self.edgegraph_embed is not None:
+        #     message += self.edgegraph_embed
+        return message
+
+    def update(self, update, x):
+        """
+        Args:
+            update: aggregated messages (batch_size, num_nodes, input_dim)
+            input: node states at the previous layer (batch_size, num_nodes, input_dim)
+
+        Returns:
+            output: updated node states (batch_size, num_nodes, output_dim)
+        """
+        # node update as a function of old states (input) and this layer output (update)
+        output = self.lin_s(x) + update
         if self.layer_norm:
             output = self.layer_norm(output)
         if self.activation:
