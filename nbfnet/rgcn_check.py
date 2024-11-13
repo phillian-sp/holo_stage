@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from torch_geometric.nn import RGCNConv, GINConv
+from torch_geometric.nn import RGCNConv
 from dataclasses import dataclass, field
 from typing import List
 

@@ -35,7 +35,7 @@ edgegraph:
     input_dim: 256 # node feature dimension
     hidden_dims: [256, 256, 256, 256, 256, 256]
     message_func: distmult
-    aggregate_func: pna
+    aggregate_func: mean
     short_cut: yes
     layer_norm: yes
     dependent: no
@@ -43,7 +43,7 @@ edgegraph:
     input_dim: 256
     hidden_dims: [256, 256, 256, 256, 256, 256]
     aggregate_func: mean
-    short_cut: yes
+    short_cut: no
     layer_norm: yes
     dependent: no
 

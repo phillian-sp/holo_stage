@@ -80,6 +80,10 @@ class EdgeGraphsNBFNet(nn.Module):
         self.edge_model = cfg.edge_model
         self.use_p_value = cfg.use_p_value
 
+        # print number of parameters in self.model
+        num_params = sum(p.numel() for p in self.model.parameters())
+        print(f"Number of parameters in self.model: {num_params}")
+
     def forward(self, data, batch):
         if data.edgegraph_edge_attr.dim() == 1:
             data.edgegraph_edge_attr = data.edgegraph_edge_attr.unsqueeze(-1)

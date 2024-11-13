@@ -265,6 +265,7 @@ class Workspace:
                 path = os.path.join(self.cfg.save_dir, "model_epoch_%d.pth" % epoch)
                 torch.save(state, path)
 
+                self.test_list(mode="train")
                 ave_metric_scores = self.test_list(mode="valid")
                 if ave_metric_scores["mrr"] > best_result:
                     best_result = ave_metric_scores["mrr"]
@@ -296,6 +297,8 @@ class Workspace:
             data_dict = self.valid_data_dict
         elif mode == "test":
             data_dict = self.test_data_dict
+        elif mode == "train":
+            data_dict = self.train_data_dict
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
@@ -305,6 +308,10 @@ class Workspace:
             metric_scores = self.test(name, test_data)
             for metric, score in metric_scores.items():
                 ave_metric_scores[metric] += score
+                if mode == "valid" or mode == "test":
+                    self.stat[f"{name}/{metric}"].append(score)
+                else:
+                    self.stat[f"{mode}_{name}/{metric}"].append(score)
 
         for metric in self.cfg.metric:
             ave_metric_scores[metric] /= len(data_dict)
@@ -362,7 +369,7 @@ class Workspace:
         for metric in self.cfg.metric:
             score = calculate_metrics(all_ranking, all_num_negative, metric)
             metric_scores[metric] = score
-            self.stat[f"{dataset_name}/{metric}"].append(score)
+            # self.stat[f"{dataset_name}/{metric}"].append(score)
 
         return metric_scores
 

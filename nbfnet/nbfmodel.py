@@ -223,6 +223,8 @@ class NBFNet(nn.Module):
         # probability logit for each tail node in the batch
         # (batch_size, num_negative + 1, dim) -> (batch_size, num_negative + 1)
         score = self.mlp(feature).squeeze(-1)
+        prob = torch.softmax(score, dim=-1)
+        print(f"prob: {prob[:, 0].mean()}")
         return score.view(shape)
 
     def visualize(self, data, batch):
