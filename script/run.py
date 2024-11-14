@@ -19,10 +19,6 @@ from dataclasses import dataclass, field
 from typing import List
 from collections import defaultdict
 
-# to add reproducibility
-# import os
-# os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
 
 separator = ">" * 30
 line = "-" * 30
@@ -52,9 +48,7 @@ def calculate_metrics(ranking, num_negatives, metric):
                     / math.factorial(num_sample - i - 1)
                 )
                 score += (
-                    num_comb
-                    * (fp_rate**i)
-                    * ((1 - fp_rate) ** (num_sample - i - 1))
+                    num_comb * (fp_rate**i) * ((1 - fp_rate) ** (num_sample - i - 1))
                 )
             score = score.mean()
         else:
@@ -85,7 +79,7 @@ class MainConfig:
     metric: List[str] = field(default_factory=lambda: METRIC)
 
     # Model cfg
-    nbf: EdgeGraphsNBFNetConfig = field(default_factory=EdgeGraphsNBFNetConfig)
+    edgegraph: EdgeGraphsNBFNetConfig = field(default_factory=EdgeGraphsNBFNetConfig)
 
     # Dataset cfg
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
@@ -210,8 +204,8 @@ class Workspace:
             for dataset_name, train_loader in train_loaders.items():
                 for batch in train_loader:  # for each batch in a given category
                     batch_size = batch.size(0)
-                    if hasattr(self.cfg.nbf, "edge_embed_dim"):
-                        edge_embed = self.cfg.nbf.edge_embed_dim
+                    if hasattr(self.cfg.edgegraph, "edge_embed_dim"):
+                        edge_embed = self.cfg.edgegraph.edge_embed_dim
                     else:
                         edge_embed = None
                     # batch: [batch_size, 3] -> [batch_size, num_negative+1, 3]
@@ -224,6 +218,7 @@ class Workspace:
                     )
                     # pred: [batch_size, num_negative+1]
                     pred = self.model(self.train_data_dict[dataset_name], batch)
+                    # print(f"pred: {pred}")
                     # target: [batch_size, num_negative+1]
                     target = torch.zeros_like(pred)
                     target[:, 0] = 1
@@ -270,6 +265,7 @@ class Workspace:
                 path = os.path.join(self.cfg.save_dir, "model_epoch_%d.pth" % epoch)
                 torch.save(state, path)
 
+                self.test_list(mode="train")
                 ave_metric_scores = self.test_list(mode="valid")
                 if ave_metric_scores["mrr"] > best_result:
                     best_result = ave_metric_scores["mrr"]
@@ -301,6 +297,8 @@ class Workspace:
             data_dict = self.valid_data_dict
         elif mode == "test":
             data_dict = self.test_data_dict
+        elif mode == "train":
+            data_dict = self.train_data_dict
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
@@ -310,6 +308,10 @@ class Workspace:
             metric_scores = self.test(name, test_data)
             for metric, score in metric_scores.items():
                 ave_metric_scores[metric] += score
+                if mode == "valid" or mode == "test":
+                    self.stat[f"{name}/{metric}"].append(score)
+                else:
+                    self.stat[f"{mode}_{name}/{metric}"].append(score)
 
         for metric in self.cfg.metric:
             ave_metric_scores[metric] /= len(data_dict)
@@ -337,8 +339,8 @@ class Workspace:
         num_negatives = []
         for batch in test_loader:
             t_batch, h_batch = tasks.all_negative(test_data, batch)
-            if hasattr(self.cfg.nbf, "edge_embed_dim"):
-                edge_embed = self.cfg.nbf.edge_embed_dim
+            if hasattr(self.cfg.edgegraph, "edge_embed_dim"):
+                edge_embed = self.cfg.edgegraph.edge_embed_dim
             else:
                 edge_embed = None
             if filtered_data is None:
@@ -367,7 +369,7 @@ class Workspace:
         for metric in self.cfg.metric:
             score = calculate_metrics(all_ranking, all_num_negative, metric)
             metric_scores[metric] = score
-            self.stat[f"{dataset_name}/{metric}"].append(score)
+            # self.stat[f"{dataset_name}/{metric}"].append(score)
 
         return metric_scores
 

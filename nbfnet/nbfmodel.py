@@ -1,5 +1,7 @@
 import copy
 from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import List
 
 import torch
 from torch import nn, autograd
@@ -8,39 +10,45 @@ from torch_scatter import scatter_add
 from . import tasks, layers
 
 
+@dataclass
+class NBFNetConfig:
+    input_dim: int = 256
+    hidden_dims: List[int] = field(default_factory=lambda: [256] * 6)
+    message_func: str = "distmult"
+    aggregate_func: str = "pna"
+    short_cut: int = 1
+    layer_norm: int = 1
+    activation: str = "relu"
+    concat_hidden: int = 0
+    num_mlp_layer: int = 2
+    dependent: int = 0
+    remove_one_hop: int = 0
+    num_beam: int = 10
+    path_topk: int = 10
+
+
 class NBFNet(nn.Module):
 
     def __init__(
         self,
-        input_dim,
-        hidden_dims,
         num_relation,
-        message_func="distmult",
-        aggregate_func="pna",
-        short_cut=False,
-        layer_norm=False,
-        activation="relu",
-        concat_hidden=False,
-        num_mlp_layer=2,
-        dependent=True,
-        remove_one_hop=False,
-        num_beam=10,
-        path_topk=10,
-        edge_embed_dim=None,
+        edge_embed_dim,
+        cfg: NBFNetConfig,
     ):
         super(NBFNet, self).__init__()
-        if not isinstance(hidden_dims, Sequence):
-            hidden_dims = [hidden_dims]
+        if not isinstance(cfg.hidden_dims, Sequence):
+            cfg.hidden_dims = [cfg.hidden_dims]
 
-        self.dims = [input_dim] + list(hidden_dims)
+        self.dims = [cfg.input_dim] + list(cfg.hidden_dims)
         self.num_relation = num_relation
-        self.short_cut = (
-            short_cut  # whether to use residual connections between GNN layers
-        )
-        self.concat_hidden = concat_hidden  # whether to compute final states as a function of all layer outputs or last
-        self.remove_one_hop = remove_one_hop  # whether to dynamically remove one-hop edges from edge_index
-        self.num_beam = num_beam
-        self.path_topk = path_topk
+        # whether to use residual connections between GNN layers
+        self.short_cut = cfg.short_cut
+        # whether to compute final states as a function of all layer outputs or last
+        self.concat_hidden = cfg.concat_hidden
+        # whether to dynamically remove one-hop edges from edge_index
+        self.remove_one_hop = cfg.remove_one_hop
+        self.num_beam = cfg.num_beam
+        self.path_topk = cfg.path_topk
         self.edge_embed_dim = edge_embed_dim
 
         self.layers = nn.ModuleList()
@@ -51,25 +59,24 @@ class NBFNet(nn.Module):
                     self.dims[i + 1],
                     num_relation,
                     self.dims[0],
-                    message_func,
-                    aggregate_func,
-                    layer_norm,
-                    activation,
-                    dependent,
+                    cfg.message_func,
+                    cfg.aggregate_func,
+                    cfg.layer_norm,
+                    cfg.activation,
+                    cfg.dependent,
                     edge_embed_dim=edge_embed_dim,
                 )
             )
 
-        feature_dim = (
-            sum(hidden_dims) if concat_hidden else hidden_dims[-1]
-        ) + input_dim
+        feature_dim = sum(cfg.hidden_dims) if cfg.concat_hidden else cfg.hidden_dims[-1]
+        feature_dim += cfg.input_dim
 
         # additional relation embedding which serves as an initial 'query' for the NBFNet forward pass
         # each layer has its own learnable relations matrix, so we send the total number of relations, too
-        self.query = nn.Embedding(num_relation, input_dim)
+        self.query = nn.Embedding(num_relation, cfg.input_dim)
         self.mlp = nn.Sequential()
         mlp = []
-        for i in range(num_mlp_layer - 1):
+        for i in range(cfg.num_mlp_layer - 1):
             mlp.append(nn.Linear(feature_dim, feature_dim))
             mlp.append(nn.ReLU())
         mlp.append(nn.Linear(feature_dim, 1))
@@ -175,7 +182,14 @@ class NBFNet(nn.Module):
         }
 
     def forward(self, data, batch):
+        """
+        args:
+            data: PyG Data object with edge indices, edge types, and optional edge attributes
+            batch: Tensor of shape [batch_size, num_negative + 1, 3] containing source, relation, and target
 
+        returns:
+            score: Tensor of shape [batch_size, num_negative + 1] containing the probability logit for each tail node in the batch
+        """
         h_index, t_index, r_index = batch.unbind(-1)
         if self.training:
             # Edge dropout in the training mode
@@ -209,6 +223,8 @@ class NBFNet(nn.Module):
         # probability logit for each tail node in the batch
         # (batch_size, num_negative + 1, dim) -> (batch_size, num_negative + 1)
         score = self.mlp(feature).squeeze(-1)
+        prob = torch.softmax(score, dim=-1)
+        print(f"prob: {prob[:, 0].mean()}")
         return score.view(shape)
 
     def visualize(self, data, batch):
