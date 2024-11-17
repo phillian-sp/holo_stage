@@ -5,21 +5,21 @@ from torch_geometric.nn import RGCNConv
 from dataclasses import dataclass, field
 from typing import List
 
-from . import layers
+from . import edge_rgcn_conv
 
 
 @dataclass
 class RGCNConfig:
     input_dim: int = 256
-    hidden_dims: List[int] = field(default_factory=lambda: [256] * 6)
+    num_layers: int = 6
     aggregate_func: str = "mean"
     short_cut: int = 1
     layer_norm: int = 1
     activation: str = "relu"
     concat_hidden: int = 0
-    dependent: int = 0
     num_bases: int = 0
-    cat_method: str = "add"  # cat or add
+    use_stage: int = 1
+    stage_method: str = "add"  # cat or add
 
 
 class RGCN(nn.Module):
@@ -30,20 +30,20 @@ class RGCN(nn.Module):
         cfg: RGCNConfig,
     ):
         # edge_embed_dim = None
+        if not cfg.use_stage:
+            edge_embed_dim = None
         super(RGCN, self).__init__()
-        self.dims = [cfg.input_dim] + list(cfg.hidden_dims)
+        self.dims = [cfg.input_dim] * (cfg.num_layers + 1)
         self.num_relation = num_relation
         self.short_cut = cfg.short_cut
         self.concat_hidden = cfg.concat_hidden
         self.edge_embed_dim = edge_embed_dim
         self.num_bases = cfg.num_bases
 
-        self.edgegraph_mlp = nn.Linear(edge_embed_dim, 256)
-
         self.layers = nn.ModuleList()
         for i in range(len(self.dims) - 1):
             self.layers.append(
-                layers.EdgeRGCNConv(
+                edge_rgcn_conv.EdgeRGCNConv(
                     self.dims[i],
                     self.dims[i + 1],
                     num_relation,
@@ -51,9 +51,9 @@ class RGCN(nn.Module):
                     cfg.layer_norm,
                     cfg.activation,
                     num_bases=cfg.num_bases,
-                    cat_method=cfg.cat_method,
+                    stage_method=cfg.stage_method,
                     edge_embed_dim=edge_embed_dim,
-                    edgegraph_mlp=self.edgegraph_mlp,
+                    edgegraph_mlp=None,
                 )
                 # RGCNConv(
                 #     self.dims[i],
@@ -68,18 +68,15 @@ class RGCN(nn.Module):
         # TODO: DELETE
         # self.layer_norm = nn.LayerNorm(self.dims[-1]) if cfg.layer_norm else None
 
-        feature_dim = sum(cfg.hidden_dims) if cfg.concat_hidden else cfg.hidden_dims[-1]
-        feature_dim += cfg.input_dim
+        feature_dim = cfg.input_dim * cfg.num_layers
 
-        self.relation_emb = nn.Embedding(num_relation, cfg.hidden_dims[-1])
+        self.relation_emb = nn.Embedding(num_relation, cfg.input_dim)
 
-        nn.init.xavier_uniform_(
-            self.relation_emb.weight, gain=nn.init.calculate_gain(cfg.activation)
-        )
+        nn.init.xavier_uniform_(self.relation_emb.weight, gain=nn.init.calculate_gain(cfg.activation))
 
         # Final linear layer if concatenating hidden layers
         if self.concat_hidden:
-            self.final_linear = nn.Linear(feature_dim, cfg.hidden_dims[-1])
+            self.final_linear = nn.Linear(feature_dim, cfg.input_dim)
 
         # print number of parameters in self.model
         num_params = sum(p.numel() for p in self.parameters())
@@ -108,7 +105,7 @@ class RGCN(nn.Module):
 
         # Pass through each RGCN layer
         for layer in self.layers:
-            new_x = layer(x, edge_index, edge_type, edge_weight, edge_embed)
+            new_x = layer.forward(x, edge_index, edge_type, edge_weight, edge_embed)
             # new_x = layer(x, edge_index, edge_type.long())
 
             # TODO: DELETE

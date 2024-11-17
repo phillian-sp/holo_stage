@@ -24,13 +24,13 @@ dataset:
   root: /home/phillipmiao/holo_stage/processed_data/row1000_train4/
   # version: v1
   csv_file_path: /home/phillipmiao/holo_stage/data/
-  train_categories: [appliances.kitchen.refrigerators, furniture.bedroom.bed, electronics.smartphone, apparel.shoes]
-  test_categories: [computers.desktop]
+  train_categories: [computers.desktop, furniture.bedroom.bed, electronics.smartphone, apparel.shoes]
+  test_categories: [appliances.kitchen.refrigerators]
   # all available categories under E-commerce dataset: computers.desktop, appliances.kitchen.refrigerators, furniture.bedroom.bed, electronics.smartphone, apparel.shoes
   # all available categories under HM dataset: hm
 
 edgegraph:
-  final_model: compgcn
+  final_model: rgcn
   nbf:
     input_dim: 256 # node feature dimension
     hidden_dims: [256, 256, 256, 256, 256, 256]
@@ -41,21 +41,12 @@ edgegraph:
     dependent: no
   rgcn:
     input_dim: 256
-    num_layers: 2
+    num_layers: 6
     aggregate_func: mean
     short_cut: no
     layer_norm: yes
-  compgcn:
-    input_dim: 256
-    num_layers: 2
-    num_bases: 0
-    use_stage: 1
-    score_func: distmult
-    dropout: 0.1
-    hid_drop: 0.3
-    gamma: 40.0
-    opn: corr
-  edge_embed_dim: 256
+
+  edge_embed_dim: 128
   edge_embed_num_layers: 1
   edge_model: GINEConv # or GCNConv (but only works with use_p_value=False)
   use_p_value: True

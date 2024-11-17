@@ -7,7 +7,7 @@ import torch
 from torch import nn, autograd
 
 from torch_scatter import scatter_add
-from . import tasks, layers
+from . import nfg_conv, tasks
 
 
 @dataclass
@@ -54,7 +54,7 @@ class NBFNet(nn.Module):
         self.layers = nn.ModuleList()
         for i in range(len(self.dims) - 1):
             self.layers.append(
-                layers.GeneralizedRelationalConv(
+                nfg_conv.GeneralizedRelationalConv(
                     self.dims[i],
                     self.dims[i + 1],
                     num_relation,
@@ -96,7 +96,7 @@ class NBFNet(nn.Module):
             mask = ~index_to_mask(index, data.num_edges)
         else:
             # we remove existing immediate edges between heads and tails in the batch with the given relation
-            edge_index = torch.cat([data.edge_index, data.edge_type.unsqueeze(0)])
+            edge_index = torch.cat([data.edge_index, data.original_edge_type.unsqueeze(0)])
             # note that here we add relation types r_index_ext to the matching query
             easy_edge = torch.stack([h_index_ext, t_index_ext, r_index_ext]).flatten(1)
             index = tasks.edge_match(edge_index, easy_edge)[0]
@@ -128,9 +128,7 @@ class NBFNet(nn.Module):
         # if data.x is None:
         index = h_index.unsqueeze(-1).expand_as(query)
         # initial (boundary) condition - initialize all node states as zeros
-        boundary = torch.zeros(
-            batch_size, data.num_nodes, self.dims[0], device=h_index.device
-        )
+        boundary = torch.zeros(batch_size, data.num_nodes, self.dims[0], device=h_index.device)
         # by the scatter operation we put query (relation) embeddings as init features of source (index) nodes
         boundary.scatter_add_(1, index.unsqueeze(1), query.unsqueeze(1))
         if data.x is not None:
@@ -168,9 +166,8 @@ class NBFNet(nn.Module):
             layer_input = hidden
 
         # original query (relation type) embeddings
-        node_query = query.unsqueeze(1).expand(
-            -1, data.num_nodes, -1
-        )  # (batch_size, num_nodes, input_dim)
+        # (batch_size, num_nodes, input_dim)
+        node_query = query.unsqueeze(1).expand(-1, data.num_nodes, -1)
         if self.concat_hidden:
             output = torch.cat(hiddens + [node_query], dim=-1)
         else:
@@ -191,40 +188,39 @@ class NBFNet(nn.Module):
             score: Tensor of shape [batch_size, num_negative + 1] containing the probability logit for each tail node in the batch
         """
         h_index, t_index, r_index = batch.unbind(-1)
+        print(h_index.shape, t_index.shape, r_index.shape)
+        print(data.edge_index.shape, data.edge_type.shape)
         if self.training:
             # Edge dropout in the training mode
             # here we want to remove immediate edges (head, relation, tail) from the edge_index and edge_types
             # to make NBFNet iteration learn non-trivial paths
             data = self.remove_easy_edges(data, h_index, t_index, r_index)
+            print(data.edge_index.shape, data.edge_type.shape)
 
         if self.edge_embed_dim is not None:
-            data.edge_type = torch.cat(
-                [data.original_edge_type.unsqueeze(-1), data.edge_embeddings], dim=-1
-            )
+            data.edge_type = torch.cat([data.original_edge_type.unsqueeze(-1), data.edge_embeddings], dim=-1)
         shape = h_index.shape
         # turn all triples in a batch into a tail prediction mode
-        h_index, t_index, r_index = self.negative_sample_to_tail(
-            h_index, t_index, r_index
-        )
+        print(f"h_index: {h_index}")
+        print(f"t_index: {t_index}")
+        print(f"r_index: {r_index}")
+        h_index, t_index, r_index = self.negative_sample_to_tail(h_index, t_index, r_index)
+        print(f"h_index: {h_index}")
+        print(f"t_index: {t_index}")
+        print(f"r_index: {r_index}")
         assert (h_index[:, [0]] == h_index).all()
         assert (r_index[:, [0]] == r_index).all()
 
         # message passing and updated node representations
-        output = self.bellmanford(
-            data, h_index[:, 0], r_index[:, 0]
-        )  # (num_nodes, batch_size, feature_dim）
+        output = self.bellmanford(data, h_index[:, 0], r_index[:, 0])  # (num_nodes, batch_size, feature_dim）
         feature = output["node_feature"]
         index = t_index.unsqueeze(-1).expand(-1, -1, feature.shape[-1])
         # extract representations of tail entities from the updated node states
-        feature = feature.gather(
-            1, index
-        )  # (batch_size, num_negative + 1, feature_dim)
+        feature = feature.gather(1, index)  # (batch_size, num_negative + 1, feature_dim)
 
         # probability logit for each tail node in the batch
         # (batch_size, num_negative + 1, dim) -> (batch_size, num_negative + 1)
         score = self.mlp(feature).squeeze(-1)
-        prob = torch.softmax(score, dim=-1)
-        print(f"prob: {prob[:, 0].mean()}")
         return score.view(shape)
 
     def visualize(self, data, batch):
@@ -240,12 +236,8 @@ class NBFNet(nn.Module):
         score = self.mlp(feature).squeeze(-1)
 
         edge_grads = autograd.grad(score, edge_weights)
-        distances, back_edges = self.beam_search_distance(
-            data, edge_grads, h_index, t_index, self.num_beam
-        )
-        paths, weights = self.topk_average_length(
-            distances, back_edges, t_index, self.path_topk
-        )
+        distances, back_edges = self.beam_search_distance(data, edge_grads, h_index, t_index, self.num_beam)
+        paths, weights = self.topk_average_length(distances, back_edges, t_index, self.path_topk)
 
         return paths, weights
 
@@ -267,26 +259,20 @@ class NBFNet(nn.Module):
 
             message = input[node_in] + edge_grad.unsqueeze(-1)  # (num_edges, num_beam)
             # (num_edges, num_beam, 3)
-            msg_source = (
-                torch.stack([node_in, node_out, relation], dim=-1)
-                .unsqueeze(1)
-                .expand(-1, num_beam, -1)
-            )
+            msg_source = torch.stack([node_in, node_out, relation], dim=-1).unsqueeze(1).expand(-1, num_beam, -1)
 
             # (num_edges, num_beam)
-            is_duplicate = torch.isclose(
-                message.unsqueeze(-1), message.unsqueeze(-2)
-            ) & (msg_source.unsqueeze(-2) == msg_source.unsqueeze(-3)).all(dim=-1)
+            is_duplicate = torch.isclose(message.unsqueeze(-1), message.unsqueeze(-2)) & (
+                msg_source.unsqueeze(-2) == msg_source.unsqueeze(-3)
+            ).all(dim=-1)
             # pick the first occurrence as the ranking in the previous node's beam
             # this makes deduplication easier later
             # and store it in msg_source
-            is_duplicate = is_duplicate.float() - torch.arange(
-                num_beam, dtype=torch.float, device=message.device
-            ) / (num_beam + 1)
+            is_duplicate = is_duplicate.float() - torch.arange(num_beam, dtype=torch.float, device=message.device) / (
+                num_beam + 1
+            )
             prev_rank = is_duplicate.argmax(dim=-1, keepdim=True)
-            msg_source = torch.cat(
-                [msg_source, prev_rank], dim=-1
-            )  # (num_edges, num_beam, 4)
+            msg_source = torch.cat([msg_source, prev_rank], dim=-1)  # (num_edges, num_beam, 4)
 
             node_out, order = node_out.sort()
             node_out_set = torch.unique(node_out)
@@ -297,9 +283,7 @@ class NBFNet(nn.Module):
             msg2out = size_to_index(size[node_out_set] * num_beam)
             # deduplicate messages that are from the same source and the same beam
             is_duplicate = (msg_source[1:] == msg_source[:-1]).all(dim=-1)
-            is_duplicate = torch.cat(
-                [torch.zeros(1, dtype=torch.bool, device=message.device), is_duplicate]
-            )
+            is_duplicate = torch.cat([torch.zeros(1, dtype=torch.bool, device=message.device), is_duplicate])
             message = message[~is_duplicate]
             msg_source = msg_source[~is_duplicate]
             msg2out = msg2out[~is_duplicate]
@@ -315,19 +299,11 @@ class NBFNet(nn.Module):
                 distance = distance.view(len(node_out_set), num_beam)
                 back_edge = back_edge.view(len(node_out_set), num_beam, 4)
                 # scatter distance / back_edge back to all nodes
-                distance = scatter_add(
-                    distance, node_out_set, dim=0, dim_size=num_nodes
-                )  # (num_nodes, num_beam)
-                back_edge = scatter_add(
-                    back_edge, node_out_set, dim=0, dim_size=num_nodes
-                )  # (num_nodes, num_beam, 4)
+                distance = scatter_add(distance, node_out_set, dim=0, dim_size=num_nodes)  # (num_nodes, num_beam)
+                back_edge = scatter_add(back_edge, node_out_set, dim=0, dim_size=num_nodes)  # (num_nodes, num_beam, 4)
             else:
-                distance = torch.full(
-                    (num_nodes, num_beam), float("-inf"), device=message.device
-                )
-                back_edge = torch.zeros(
-                    num_nodes, num_beam, 4, dtype=torch.long, device=message.device
-                )
+                distance = torch.full((num_nodes, num_beam), float("-inf"), device=message.device)
+                back_edge = torch.zeros(num_nodes, num_beam, 4, dtype=torch.long, device=message.device)
 
             distances.append(distance)
             back_edges.append(back_edge)
@@ -343,9 +319,7 @@ class NBFNet(nn.Module):
         for i in range(len(distances)):
             distance, order = distances[i][t_index].flatten(0, -1).sort(descending=True)
             back_edge = back_edges[i][t_index].flatten(0, -2)[order]
-            for d, (h, t, r, prev_rank) in zip(
-                distance[:k].tolist(), back_edge[:k].tolist()
-            ):
+            for d, (h, t, r, prev_rank) in zip(distance[:k].tolist(), back_edge[:k].tolist()):
                 if d == float("-inf"):
                     break
                 path = [(h, t, r)]
@@ -356,9 +330,7 @@ class NBFNet(nn.Module):
                 average_lengths.append(d / len(path))
 
         if paths:
-            average_lengths, paths = zip(
-                *sorted(zip(average_lengths, paths), reverse=True)[:k]
-            )
+            average_lengths, paths = zip(*sorted(zip(average_lengths, paths), reverse=True)[:k])
 
         return paths, average_lengths
 
@@ -388,9 +360,7 @@ def multi_slice_mask(starts, ends, length):
 def scatter_extend(data, size, input, input_size):
     new_size = size + input_size
     new_cum_size = new_size.cumsum(0)
-    new_data = torch.zeros(
-        new_cum_size[-1], *data.shape[1:], dtype=data.dtype, device=data.device
-    )
+    new_data = torch.zeros(new_cum_size[-1], *data.shape[1:], dtype=data.dtype, device=data.device)
     starts = new_cum_size - new_size
     ends = starts + size
     index = multi_slice_mask(starts, ends, new_cum_size[-1])
@@ -429,9 +399,7 @@ def scatter_topk(input, size, k, largest=True):
     if isinstance(k, torch.Tensor) and k.shape == size.shape:
         value = value.view(-1, *input.shape[1:])
         index = index.view(-1, *input.shape[1:])
-        index = index - (size.cumsum(0) - size).repeat_interleave(k).view(
-            [-1] + [1] * (index.ndim - 1)
-        )
+        index = index - (size.cumsum(0) - size).repeat_interleave(k).view([-1] + [1] * (index.ndim - 1))
     else:
         value = value.view(-1, k, *input.shape[1:])
         index = index.view(-1, k, *input.shape[1:])

@@ -4,7 +4,7 @@ from torch_geometric.nn import RGCNConv
 from dataclasses import dataclass, field
 from typing import List
 
-from . import layers
+from . import nfg_conv
 
 
 @dataclass
@@ -68,9 +68,7 @@ class RGCN(nn.Module):
         # TODO: DELETE
         self.layer_norm = nn.LayerNorm(cfg.hidden_dims[-1]) if cfg.layer_norm else None
 
-        nn.init.xavier_uniform_(
-            self.relation_emb.weight, gain=nn.init.calculate_gain(cfg.activation)
-        )
+        nn.init.xavier_uniform_(self.relation_emb.weight, gain=nn.init.calculate_gain(cfg.activation))
 
         # Final linear layer if concatenating hidden layers
         if self.concat_hidden:
@@ -82,9 +80,7 @@ class RGCN(nn.Module):
         batch: Tensor of shape [batch_size, num_negative + 1, 3] containing source, relation, and target nodes
         """
         if self.edge_embed_dim is not None:
-            data.edge_type = torch.cat(
-                [data.original_edge_type.unsqueeze(-1), data.edge_embeddings], dim=-1
-            )
+            data.edge_type = torch.cat([data.original_edge_type.unsqueeze(-1), data.edge_embeddings], dim=-1)
         # x = torch.rand(
         #     (1, data.num_nodes, self.layers[0].input_dim), device=data.edge_index.device
         # )
