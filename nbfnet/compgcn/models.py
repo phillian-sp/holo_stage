@@ -103,38 +103,34 @@ class CompGCNBase(BaseModel):
             else:
                 self.init_rel = get_param((num_rel * 2, self.cfg.input_dim))
 
+        self.layers = torch.nn.ModuleList()
         if self.cfg.num_bases > 0:
-            self.conv1 = CompGCNConvBasis(
-                self.cfg.input_dim, self.cfg.input_dim, num_rel, self.cfg.num_bases, act=self.act, params=self.cfg
-            )
-            self.conv2 = (
-                CompGCNConv(self.cfg.input_dim, self.cfg.input_dim, num_rel, act=self.act, params=self.cfg)
-                if self.cfg.num_layers == 2
-                else None
+            self.layers.append(
+                CompGCNConvBasis(
+                    self.cfg.input_dim, self.cfg.input_dim, num_rel, self.cfg.num_bases, act=self.act, params=self.cfg
+                )
             )
         else:
-            self.conv1 = CompGCNConv(self.cfg.input_dim, self.cfg.input_dim, num_rel, act=self.act, params=self.cfg)
-            self.conv2 = (
+            self.layers.append(
                 CompGCNConv(self.cfg.input_dim, self.cfg.input_dim, num_rel, act=self.act, params=self.cfg)
-                if self.cfg.num_layers == 2
-                else None
+            )
+
+        for i in range(1, self.cfg.num_layers):
+            self.layers.append(
+                CompGCNConv(self.cfg.input_dim, self.cfg.input_dim, num_rel, act=self.act, params=self.cfg)
             )
 
         # self.register_parameter("bias", Parameter(torch.zeros(self.p.num_ent)))
 
-    def forward_base(self, edge_index, edge_type, sub, rel, obj, drop1, drop2, edge_embed=None):
+    def forward_base(self, edge_index, edge_type, sub, rel, obj, drop, edge_embed=None):
 
         # r: (6, input_dim)
         r = self.init_rel if self.cfg.score_func != "transe" else torch.cat([self.init_rel, -self.init_rel], dim=0)
         init_embed = torch.ones((self.num_nodes, self.cfg.input_dim), device=sub.device)
-        x, r = self.conv1(init_embed, edge_index, edge_type, rel_embed=r, edge_embed=edge_embed)
-        x = drop1(x)
-        x, r = (
-            self.conv2(x, edge_index, edge_type, rel_embed=r, edge_embed=edge_embed)
-            if self.cfg.num_layers == 2
-            else (x, r)
-        )
-        x = drop2(x) if self.cfg.num_layers == 2 else x
+        x = init_embed
+        for layer in self.layers:
+            x, r = layer(x, edge_index, edge_type, rel_embed=r, edge_embed=edge_embed)
+            x = drop(x)
 
         # x: (num_nodes, input_dim)
         batch_size, num_neg_plus_1 = sub.size()
@@ -153,9 +149,7 @@ class CompGCN_TransE(CompGCNBase):
 
     def forward(self, edge_index, edge_type, sub, rel, obj, edge_embed=None):
 
-        sub_emb, rel_emb, obj_emb = self.forward_base(
-            edge_index, edge_type, sub, rel, obj, self.drop, self.drop, edge_embed
-        )
+        sub_emb, rel_emb, obj_emb = self.forward_base(edge_index, edge_type, sub, rel, obj, self.drop, edge_embed)
         pred_emb = sub_emb + rel_emb
 
         x = self.cfg.gamma - torch.norm(pred_emb.unsqueeze(1) - obj_emb, p=1, dim=2)
@@ -171,16 +165,10 @@ class CompGCN_DistMult(CompGCNBase):
         self.drop = torch.nn.Dropout(self.cfg.hid_drop)
 
     def forward(self, edge_index, edge_type, sub, rel, obj, edge_embed=None):
-        sub_emb, rel_emb, obj_emb = self.forward_base(
-            edge_index, edge_type, sub, rel, obj, self.drop, self.drop, edge_embed
-        )
+        sub_emb, rel_emb, obj_emb = self.forward_base(edge_index, edge_type, sub, rel, obj, self.drop, edge_embed)
         x = sub_emb * rel_emb * obj_emb
         x = torch.sum(x, dim=2)
 
-        # x = torch.mm(pred_emb, obj_emb.transpose(1, 0))
-        # x += self.bias.expand_as(x)
-
-        # score = torch.sigmoid(x)
         return x
 
 
@@ -195,7 +183,6 @@ class CompGCN_ConvE(CompGCNBase):
         self.bn2 = torch.nn.BatchNorm1d(self.cfg.input_dim)
 
         self.hidden_drop = torch.nn.Dropout(self.cfg.hid_drop)
-        self.hidden_drop2 = torch.nn.Dropout(self.cfg.hid_drop2)
         self.feature_drop = torch.nn.Dropout(self.cfg.feat_drop)
         self.m_conv1 = torch.nn.Conv2d(
             1,

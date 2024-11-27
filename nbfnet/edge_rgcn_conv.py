@@ -21,7 +21,7 @@ class EdgeRGCNConv(MessagePassing):
         layer_norm: bool,
         activation: str,
         num_bases: int = 0,
-        edge_method: str = "cat",
+        stage_method: str = "cat",
         edge_embed_dim: Optional[int] = None,
     ):
         super(EdgeRGCNConv, self).__init__()
@@ -31,7 +31,7 @@ class EdgeRGCNConv(MessagePassing):
         self.aggregate_func = aggregate_func
         self.edge_embed_dim = edge_embed_dim
         self.num_bases = num_bases
-        self.edge_method = edge_method
+        self.stage_method = stage_method
 
         if layer_norm:
             self.layer_norm = nn.LayerNorm(output_dim)
@@ -45,11 +45,11 @@ class EdgeRGCNConv(MessagePassing):
         self.lin_s = nn.Linear(input_dim, output_dim)
         nn.init.xavier_uniform_(self.lin_s.weight)
 
-        if self.edge_method == "cat":
+        if self.stage_method == "cat":
             assert edge_embed_dim is not None
             self.lin_f = nn.Linear(edge_embed_dim + input_dim, output_dim)
             nn.init.xavier_uniform_(self.lin_f.weight)
-        elif self.edge_method == "add":
+        elif self.stage_method == "add":
             self.lin_f = nn.Identity()
 
         # define a new mlp layer and apply it to the edgegraph_embed
@@ -145,12 +145,12 @@ class EdgeRGCNConv(MessagePassing):
             transformed_edge_embed = self.edgegraph_mlp.forward(edge_embed)
         else:
             transformed_edge_embed = 0
-        if self.edge_method == "cat":
+        if self.stage_method == "cat":
             message = torch.cat([message, transformed_edge_embed.unsqueeze(0)], dim=-1)
-        elif self.edge_method == "add":
+        elif self.stage_method == "add":
             message += transformed_edge_embed
         else:
-            raise ValueError("Unknown concatenation method `%s`" % self.edge_method)
+            raise ValueError("Unknown concatenation method `%s`" % self.stage_method)
 
         return message
 

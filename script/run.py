@@ -42,14 +42,8 @@ def calculate_metrics(ranking, num_negatives, metric):
             score = 0
             for i in range(threshold):
                 # choose i false positive from num_sample - 1 negatives
-                num_comb = (
-                    math.factorial(num_sample - 1)
-                    / math.factorial(i)
-                    / math.factorial(num_sample - i - 1)
-                )
-                score += (
-                    num_comb * (fp_rate**i) * ((1 - fp_rate) ** (num_sample - i - 1))
-                )
+                num_comb = math.factorial(num_sample - 1) / math.factorial(i) / math.factorial(num_sample - i - 1)
+                score += num_comb * (fp_rate**i) * ((1 - fp_rate) ** (num_sample - i - 1))
             score = score.mean()
         else:
             score = (ranking <= threshold).float().mean()
@@ -104,9 +98,7 @@ class MainConfig:
     def __post_init__(self):
         seed_everything(self.seed)
         # torch.use_deterministic_algorithms(True)
-        self.device = (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        )
+        self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         if self.save_dir[-1] == "/":
             self.save_dir = self.save_dir[:-1]
         if "seed" not in self.save_dir:
@@ -116,9 +108,7 @@ class MainConfig:
         if self.wb_run == "" and self.use_wb:
             self.wb_run = self.save_dir.split("/")[-1]
         if self.wb_group == "" and self.use_wb:
-            self.wb_group = "_".join(
-                [w for w in self.wb_run.split("_") if "seed" not in w]
-            )
+            self.wb_group = "_".join([w for w in self.wb_run.split("_") if "seed" not in w])
 
 
 class Workspace:
@@ -153,25 +143,17 @@ class Workspace:
         self.dataset_list, self.num_relations = util.build_dataset(self.cfg)
         self.model: EdgeGraphsNBFNet = util.build_model(self.num_relations, self.cfg)
         self.model = self.model.to(self.cfg.device)
-        self.train_data_list, self.valid_data_list, self.test_data_list = (
-            self.dataset_list
-        )
+        self.train_data_list, self.valid_data_list, self.test_data_list = self.dataset_list
         self.train_data_dict = {
-            self.cfg.dataset.train_categories[i]: self.train_data_list[i].to(
-                self.cfg.device
-            )
+            self.cfg.dataset.train_categories[i]: self.train_data_list[i].to(self.cfg.device)
             for i in range(len(self.train_data_list))
         }
         self.valid_data_dict = {
-            self.cfg.dataset.train_categories[i]: self.valid_data_list[i].to(
-                self.cfg.device
-            )
+            self.cfg.dataset.train_categories[i]: self.valid_data_list[i].to(self.cfg.device)
             for i in range(len(self.valid_data_list))
         }
         self.test_data_dict = {
-            self.cfg.dataset.test_categories[i]: self.test_data_list[i].to(
-                self.cfg.device
-            )
+            self.cfg.dataset.test_categories[i]: self.test_data_list[i].to(self.cfg.device)
             for i in range(len(self.test_data_list))
         }
 
@@ -181,17 +163,11 @@ class Workspace:
 
         train_loaders = {}
         for name, train_data in self.train_data_dict.items():
-            train_triplets = torch.cat(
-                [train_data.target_edge_index, train_data.target_edge_type.unsqueeze(0)]
-            ).t()
+            train_triplets = torch.cat([train_data.target_edge_index, train_data.target_edge_type.unsqueeze(0)]).t()
             sampler = torch_data.RandomSampler(train_triplets)
-            train_loaders[name] = torch_data.DataLoader(
-                train_triplets, self.cfg.batch_size, sampler=sampler
-            )
+            train_loaders[name] = torch_data.DataLoader(train_triplets, self.cfg.batch_size, sampler=sampler)
 
-        optimizer: optim.Optimizer = getattr(optim, self.cfg.optimizer)(
-            self.model.parameters(), lr=self.cfg.lr
-        )
+        optimizer: optim.Optimizer = getattr(optim, self.cfg.optimizer)(self.model.parameters(), lr=self.cfg.lr)
 
         best_result = float("-inf")
         best_epoch = -1
@@ -223,9 +199,7 @@ class Workspace:
                     target = torch.zeros_like(pred)
                     target[:, 0] = 1
 
-                    loss = F.binary_cross_entropy_with_logits(
-                        pred, target, reduction="none"
-                    )
+                    loss = F.binary_cross_entropy_with_logits(pred, target, reduction="none")
 
                     neg_weight = torch.ones_like(pred)
                     if self.cfg.adversarial_temperature > 0:
@@ -241,14 +215,13 @@ class Workspace:
                     loss = loss.mean()
 
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
 
                     optimizer.step()
                     optimizer.zero_grad()
 
                     losses.append(loss.item())
-                    self.stat[f"loss/{dataset_name}"].append(
-                        loss.item() * batch_size, count=batch_size
-                    )
+                    self.stat[f"loss/{dataset_name}"].append(loss.item() * batch_size, count=batch_size)
 
                 # end of training on a category
                 avg_loss = sum(losses) / len(losses)
@@ -326,13 +299,9 @@ class Workspace:
         # TODO: see if we need to use filtered_data
         filtered_data = None
 
-        test_triplets = torch.cat(
-            [test_data.target_edge_index, test_data.target_edge_type.unsqueeze(0)]
-        ).t()
+        test_triplets = torch.cat([test_data.target_edge_index, test_data.target_edge_type.unsqueeze(0)]).t()
         sampler = torch_data.RandomSampler(test_triplets)
-        test_loader = torch_data.DataLoader(
-            test_triplets, self.cfg.batch_size, sampler=sampler
-        )
+        test_loader = torch_data.DataLoader(test_triplets, self.cfg.batch_size, sampler=sampler)
 
         self.model.eval()
         rankings = []
@@ -344,13 +313,9 @@ class Workspace:
             else:
                 edge_embed = None
             if filtered_data is None:
-                t_mask, h_mask = tasks.strict_negative_mask(
-                    test_data, batch, edge_embed
-                )
+                t_mask, h_mask = tasks.strict_negative_mask(test_data, batch, edge_embed)
             else:
-                t_mask, h_mask = tasks.strict_negative_mask(
-                    filtered_data, batch, edge_embed
-                )
+                t_mask, h_mask = tasks.strict_negative_mask(filtered_data, batch, edge_embed)
             t_pred = self.model(test_data, t_batch)
             h_pred = self.model(test_data, h_batch)
             pos_h_index, pos_t_index, pos_r_index = batch.t()

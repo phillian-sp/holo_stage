@@ -53,7 +53,6 @@ class RGCN(nn.Module):
                     num_bases=cfg.num_bases,
                     stage_method=cfg.stage_method,
                     edge_embed_dim=edge_embed_dim,
-                    edgegraph_mlp=None,
                 )
                 # RGCNConv(
                 #     self.dims[i],
