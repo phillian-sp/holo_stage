@@ -21,7 +21,7 @@ class EdgeRGCNConv(MessagePassing):
         layer_norm: bool,
         activation: str,
         num_bases: int = 0,
-        stage_method: str = "cat",
+        edge_method: str = "method1",
         edge_embed_dim: Optional[int] = None,
     ):
         super(EdgeRGCNConv, self).__init__()
@@ -31,7 +31,15 @@ class EdgeRGCNConv(MessagePassing):
         self.aggregate_func = aggregate_func
         self.edge_embed_dim = edge_embed_dim
         self.num_bases = num_bases
-        self.stage_method = stage_method
+        if edge_method == "method1" or edge_method == "method2":
+            self.stage_method = "add"
+        else:
+            self.stage_method = "cat"
+
+        if edge_method == "method1" or edge_method == "method3":
+            self.transform_edge = False
+        else:
+            self.transform_edge = True
 
         if layer_norm:
             self.layer_norm = nn.LayerNorm(output_dim)
@@ -71,22 +79,12 @@ class EdgeRGCNConv(MessagePassing):
 
     def forward(
         self,
-        input: torch.Tensor,  # (batch_size, num_nodes, input_dim)
+        input: torch.Tensor,  # (num_nodes, input_dim)
         edge_index: torch.Tensor,  # (2, num_edges)
         edge_type: torch.Tensor,  # (num_edges,)
         edge_weight: torch.Tensor,  # (num_edges,)
         edge_embed: Optional[torch.Tensor] = None,
     ):
-        """
-        Args:
-            input: node states at the previous layer (batch_size, num_nodes, input_dim)
-            edge_index: edge indices (2, num_edges)
-            edge_type: edge types edge_type[:, 0] is the relation index, edge_type[:, 1:] is the edge attribute
-            edge_weight: edge weights (num_edges,)
-
-        Returns:
-            output: updated node states (batch_size, num_nodes, output_dim)
-        """
         num_node = input.size(self.node_dim)
         if edge_weight is None:
             edge_weight = torch.ones(len(edge_type), device=input.device)
@@ -110,20 +108,10 @@ class EdgeRGCNConv(MessagePassing):
 
     def message(
         self,
-        input_j: torch.Tensor,  # (batch_size, num_edges, input_dim) second node states
+        input_j: torch.Tensor,  # (num_edges, input_dim) second node states
         edge_type: torch.Tensor,  # (num_edges,) edge types
         edge_embed: torch.Tensor,  # (num_edges, input_dim) edge attributes
     ):
-        """
-        Args:
-            input_j: node states at the previous layer (batch_size, num_edges, input_dim)
-            relation: relation embeddings for each edge type (batch_size, num_relation, input_dim)
-            boundary: node states at the start of the message passing (num_nodes, batch_size, input_dim)
-            edge_type: edge types edge_type[:, 0] is the relation index, edge_type[:, 1:] is the edge attribute
-
-        Returns:
-            message: messages passed from the source nodes to the target nodes (batch_size, num_edges + num_nodes, input_dim)
-        """
         batch_size, num_edges, _ = input_j.size()
         message = torch.zeros((batch_size, num_edges, self.output_dim), device=input_j.device)
         if self.num_bases > 0:
@@ -141,10 +129,15 @@ class EdgeRGCNConv(MessagePassing):
             else:
                 rel_mapped = self.lin_r[rel_type](input_j)
             message += rel_mapped * mask
+
         if self.edge_embed_dim is not None:
-            transformed_edge_embed = self.edgegraph_mlp.forward(edge_embed)
+            if self.transform_edge:
+                transformed_edge_embed = self.edgegraph_mlp.forward(edge_embed)
+            else:
+                transformed_edge_embed = edge_embed
         else:
             transformed_edge_embed = 0
+
         if self.stage_method == "cat":
             message = torch.cat([message, transformed_edge_embed.unsqueeze(0)], dim=-1)
         elif self.stage_method == "add":
@@ -157,14 +150,14 @@ class EdgeRGCNConv(MessagePassing):
     def aggregate(self, input, edge_weight, index, edge_type, dim_size):
         """
         Args:
-            input: messages passed from the source nodes to the target nodes (batch_size, num_edges, input_dim)
+            input: messages passed from the source nodes to the target nodes (num_edges, input_dim)
             edge_weight: edge weights (num_edges,)
             index: node indices of the first node in each edge (num_edges,)
             edge_type: edge type indices for each edge (num_edges,)
             dim_size: number of nodes
 
         Returns:
-            output: aggregated messages (batch_size, num_nodes, output_dim)
+            output: aggregated messages (num_nodes, output_dim)
         """
         # Weighted input
         shape = [1] * input.ndim
@@ -197,11 +190,11 @@ class EdgeRGCNConv(MessagePassing):
     def update(self, update, input):
         """
         Args:
-            update: aggregated messages (batch_size, num_nodes, input_dim)
-            input: node states at the previous layer (batch_size, num_nodes, input_dim)
+            update: aggregated messages (num_nodes, input_dim)
+            input: node states at the previous layer (num_nodes, input_dim)
 
         Returns:
-            output: updated node states (batch_size, num_nodes, output_dim)
+            output: updated node states (num_nodes, output_dim)
         """
         # node update as a function of old states (input) and this layer output (update)
         output = self.lin_s(input) + self.lin_f(update)

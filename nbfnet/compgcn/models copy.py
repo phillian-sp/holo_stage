@@ -37,13 +37,7 @@ class CompGCN(torch.nn.Module):
             edge_embed_dim = None
         super(CompGCN, self).__init__()
         self.edge_embed_dim = edge_embed_dim
-
-        if cfg.score_func == "transe":
-            self.model = CompGCN_TransE(num_relation // 2, edge_embed_dim, cfg)
-        elif cfg.score_func == "distmult":
-            self.model = CompGCN_DistMult(num_relation // 2, edge_embed_dim, cfg)
-        else:
-            raise NotImplementedError
+        self.model = CompGCN_Dismult(num_relation // 2, edge_embed_dim, cfg)
 
     def forward(self, data, batch):
         self.num_nodes = data.num_nodes
@@ -115,24 +109,7 @@ class CompGCNBase(BaseModel):
         return sub_emb, rel_emb, obj_emb
 
 
-class CompGCN_TransE(CompGCNBase):
-
-    def __init__(self, num_rel, edge_embed_dim, cfg: CompGCNConfig):
-        super(self.__class__, self).__init__(num_rel, edge_embed_dim, cfg)
-        self.drop = torch.nn.Dropout(self.cfg.hid_drop)
-
-    def forward(self, edge_index, edge_type, sub, rel, obj, edge_embed=None):
-
-        sub_emb, rel_emb, obj_emb = self.forward_base(edge_index, edge_type, sub, rel, obj, self.drop, edge_embed)
-        pred_emb = sub_emb + rel_emb
-
-        x = self.cfg.gamma - torch.norm(pred_emb.unsqueeze(1) - obj_emb, p=1, dim=2)
-        # score = torch.sigmoid(x)
-
-        return x
-
-
-class CompGCN_DistMult(CompGCNBase):
+class CompGCN_Inner(CompGCNBase):
 
     def __init__(self, num_rel, edge_embed_dim, cfg: CompGCNConfig):
         super(self.__class__, self).__init__(num_rel, edge_embed_dim, cfg)

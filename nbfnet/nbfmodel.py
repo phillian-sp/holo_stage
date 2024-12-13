@@ -188,26 +188,26 @@ class NBFNet(nn.Module):
             score: Tensor of shape [batch_size, num_negative + 1] containing the probability logit for each tail node in the batch
         """
         h_index, t_index, r_index = batch.unbind(-1)
-        print(h_index.shape, t_index.shape, r_index.shape)
-        print(data.edge_index.shape, data.edge_type.shape)
+        # print(h_index.shape, t_index.shape, r_index.shape)
+        # print(data.edge_index.shape, data.edge_type.shape)
         if self.training:
             # Edge dropout in the training mode
             # here we want to remove immediate edges (head, relation, tail) from the edge_index and edge_types
             # to make NBFNet iteration learn non-trivial paths
             data = self.remove_easy_edges(data, h_index, t_index, r_index)
-            print(data.edge_index.shape, data.edge_type.shape)
+            # print(data.edge_index.shape, data.edge_type.shape)
 
         if self.edge_embed_dim is not None:
             data.edge_type = torch.cat([data.original_edge_type.unsqueeze(-1), data.edge_embeddings], dim=-1)
         shape = h_index.shape
         # turn all triples in a batch into a tail prediction mode
-        print(f"h_index: {h_index}")
-        print(f"t_index: {t_index}")
-        print(f"r_index: {r_index}")
+        # print(f"h_index: {h_index}")
+        # print(f"t_index: {t_index}")
+        # print(f"r_index: {r_index}")
         h_index, t_index, r_index = self.negative_sample_to_tail(h_index, t_index, r_index)
-        print(f"h_index: {h_index}")
-        print(f"t_index: {t_index}")
-        print(f"r_index: {r_index}")
+        # print(f"h_index: {h_index}")
+        # print(f"t_index: {t_index}")
+        # print(f"r_index: {r_index}")
         assert (h_index[:, [0]] == h_index).all()
         assert (r_index[:, [0]] == r_index).all()
 

@@ -19,7 +19,7 @@ class RGCNConfig:
     concat_hidden: int = 0
     num_bases: int = 0
     use_stage: int = 1
-    stage_method: str = "add"  # cat or add
+    edge_method: str = "method1"
 
 
 class RGCN(nn.Module):
@@ -51,21 +51,10 @@ class RGCN(nn.Module):
                     cfg.layer_norm,
                     cfg.activation,
                     num_bases=cfg.num_bases,
-                    stage_method=cfg.stage_method,
+                    edge_method=cfg.edge_method,
                     edge_embed_dim=edge_embed_dim,
                 )
-                # RGCNConv(
-                #     self.dims[i],
-                #     self.dims[i + 1],
-                #     num_relation,
-                #     num_bases=cfg.num_bases,
-                #     root_weight=True,
-                #     bias=True,
-                # )
             )
-
-        # TODO: DELETE
-        # self.layer_norm = nn.LayerNorm(self.dims[-1]) if cfg.layer_norm else None
 
         feature_dim = cfg.input_dim * cfg.num_layers
 
@@ -86,10 +75,6 @@ class RGCN(nn.Module):
         data: PyG Data object with edge indices, edge types, and optional edge attributes
         batch: Tensor of shape [batch_size, num_negative + 1, 3] containing source, relation, and target nodes
         """
-        # x = torch.rand(
-        #     (1, data.num_nodes, self.layers[0].input_dim), device=data.edge_index.device
-        # )
-        # make x constant
         x = torch.ones((1, data.num_nodes, self.dims[0]), device=data.edge_index.device)
         edge_index = data.edge_index  # edge indices of shape [2, num_edges]
         edge_type = data.original_edge_type  # edge types of shape [num_edges]
@@ -105,18 +90,12 @@ class RGCN(nn.Module):
         # Pass through each RGCN layer
         for layer in self.layers:
             new_x = layer.forward(x, edge_index, edge_type, edge_weight, edge_embed)
-            # new_x = layer(x, edge_index, edge_type.long())
-
-            # TODO: DELETE
-            # if self.layer_norm:
-            #     new_x = self.layer_norm(new_x)
-            # new_x = torch.relu(new_x)  # Apply activation function
 
             if self.short_cut:
-                new_x = new_x + x  # Adding the shortcut connection
+                new_x = new_x + x
 
-            x = new_x  # Update x to the new layer output
-            hidden_states.append(x)  # Store for concat_hidden
+            x = new_x
+            hidden_states.append(x)
 
         # If concatenating hidden states, combine them along the last dimension
         if self.concat_hidden:
@@ -125,24 +104,14 @@ class RGCN(nn.Module):
 
         x = x.expand(batch.size(0), -1, -1)
 
-        # Extract embeddings for each node involved in the triples in `batch`
         source_nodes = batch[:, :, 0].unsqueeze(-1).expand(-1, -1, x.size(-1))
         target_nodes = batch[:, :, 1].unsqueeze(-1).expand(-1, -1, x.size(-1))
         relations = batch[:, :, 2]
-        # Gather node and relation embeddings
+
         source_emb = x.gather(1, source_nodes)
         target_emb = x.gather(1, target_nodes)
         relation_emb = self.relation_emb(relations)
 
-        # Compute score for each (source, relation, target) triple
-        # score: [batch_size, num_negative + 1]
         score = torch.sum(source_emb * relation_emb * target_emb, dim=-1)
-
-        # print probability use softmax
-        # prob = torch.softmax(score, dim=-1)
-        # print(f"prob: {prob[:, 0].mean()}")
-        # # print average rank of positive samples
-        # rank = torch.argsort(score, dim=-1, descending=True)
-        # print(f"rank: {torch.where(rank == 0)[1].mean()}")
 
         return score

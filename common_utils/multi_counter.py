@@ -103,10 +103,11 @@ class MultiCounter:
 
         self.last_time = datetime.now()
 
-    def summary(self, global_counter, *, reset=True, prefix=""):
+    def summary(self, global_counter, *, reset=True, prefix="", verbose=True):
         assert self.last_time is not None
         time_elapsed = (datetime.now() - self.last_time).total_seconds()
-        print("[%d] Time spent = %.2f s" % (global_counter, time_elapsed))
+        if verbose:
+            print("[%d] Time spent = %.2f s" % (global_counter, time_elapsed))
 
         self.history.append({k: v.mean() for k, v in self.stats.items() if v.counter > 0})
         with open(self.pikl_path, "wb") as f:
@@ -118,14 +119,16 @@ class MultiCounter:
             if v.counter > 1:
                 continue
             info = str(global_counter) + ": " + k.ljust(self.max_key_len + 2)
-            print(v.summary(info=info))
+            if verbose:
+                print(v.summary(info=info))
 
         for k in sorted_keys:
             v = self.stats[k]
             if v.counter == 1:
                 continue
             info = str(global_counter) + ": " + k.ljust(self.max_key_len + 2)
-            print(v.summary(info=info))
+            if verbose:
+                print(v.summary(info=info))
 
         if self.use_wandb:
             to_log = {f"{prefix}{k}": v.mean() for k, v in self.stats.items() if v.counter > 0}

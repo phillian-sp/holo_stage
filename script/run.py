@@ -226,11 +226,11 @@ class Workspace:
                 # end of training on a category
                 avg_loss = sum(losses) / len(losses)
                 print(f"average binary cross entropy for {dataset_name}: {avg_loss}")
-            print(wrap_ruler(f"Epoch {epoch} end"))
+            # print(wrap_ruler(f"Epoch {epoch} end"))
 
             if (epoch + 1) % self.cfg.eval_interval == 0:
                 # end of training on all categories in a eval_interval
-                print("Save checkpoint to model_epoch_%d.pth" % epoch)
+                # print("Save checkpoint to model_epoch_%d.pth" % epoch)
                 state = {
                     "model": self.model.state_dict(),
                     "optimizer": optimizer.state_dict(),
@@ -248,7 +248,7 @@ class Workspace:
 
             # end of training on all categories in a epoch
             self.stat[f"other/epoch"].append(epoch)
-            self.stat.summary(epoch, reset=True)
+            self.stat.summary(epoch, reset=True, verbose=False)
 
         path = os.path.join(self.cfg.save_dir, "model_epoch_%d.pth" % best_epoch)
         print("Load checkpoint from path: %s" % path)
@@ -262,10 +262,11 @@ class Workspace:
         for metric in self.cfg.metric:
             self.stat[f"best_val/{metric}"].append(valid_result[metric])
             self.stat[f"best_test/{metric}"].append(test_result[metric])
-        self.stat.summary(self.cfg.epochs, reset=True)
+        self.stat.summary(self.cfg.epochs, reset=True, verbose=False)
 
     def test_list(self, mode="test"):
-        print(wrap_ruler(f"Test on {mode}"))
+        if mode == "test":
+            print(wrap_ruler(f"Test on {mode}"))
         if mode == "valid":
             data_dict = self.valid_data_dict
         elif mode == "test":
@@ -277,7 +278,8 @@ class Workspace:
 
         ave_metric_scores = defaultdict(float)
         for name, test_data in data_dict.items():
-            print(f"Start testing on {name}")
+            if mode == "test":
+                print(f"Start testing on {name}")
             metric_scores = self.test(name, test_data)
             for metric, score in metric_scores.items():
                 ave_metric_scores[metric] += score
@@ -289,9 +291,9 @@ class Workspace:
         for metric in self.cfg.metric:
             ave_metric_scores[metric] /= len(data_dict)
             self.stat[f"{mode}/{metric}"].append(ave_metric_scores[metric])
-            print(f"Average {metric}: {ave_metric_scores[metric]}")
+            if mode == "test":
+                print(f"Average {metric}: {ave_metric_scores[metric]}")
 
-        print(wrap_ruler(""))
         return ave_metric_scores
 
     @torch.no_grad()
@@ -334,7 +336,6 @@ class Workspace:
         for metric in self.cfg.metric:
             score = calculate_metrics(all_ranking, all_num_negative, metric)
             metric_scores[metric] = score
-            # self.stat[f"{dataset_name}/{metric}"].append(score)
 
         return metric_scores
 

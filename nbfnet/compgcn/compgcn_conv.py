@@ -13,6 +13,8 @@ class CompGCNConv(MessagePassing):
         self.act = act
         self.device = None
 
+        self.e_weight = get_param((in_channels, out_channels))
+
         self.w_loop = get_param((in_channels, out_channels))
         self.w_in = get_param((in_channels, out_channels))
         self.w_out = get_param((in_channels, out_channels))
@@ -47,6 +49,8 @@ class CompGCNConv(MessagePassing):
         )
 
         if edge_embed is not None:
+            # apply a mlp
+            # edge_embed = torch.mm(edge_embed, self.e_weight)
             self.in_embed, self.out_embed, self.pp_embed = (
                 edge_embed[:num_edges],
                 edge_embed[num_edges : 2 * num_edges],
@@ -58,9 +62,9 @@ class CompGCNConv(MessagePassing):
         self.loop_index = torch.stack([torch.arange(num_ent), torch.arange(num_ent)]).to(self.device)
         self.loop_type = torch.full((num_ent,), rel_embed.size(0) - 1, dtype=torch.long).to(self.device)
 
-        self.in_norm = self.compute_norm2(self.in_index, num_ent)
-        self.out_norm = self.compute_norm2(self.out_index, num_ent)
-        self.pp_norm = self.compute_norm2(self.pp_index, num_ent)
+        self.in_norm = self.compute_norm(self.in_index, num_ent)
+        self.out_norm = self.compute_norm(self.out_index, num_ent)
+        self.pp_norm = self.compute_norm(self.pp_index, num_ent)
 
         in_res = self.propagate(
             "add",
@@ -130,10 +134,23 @@ class CompGCNConv(MessagePassing):
     def message(self, x_j, edge_type, rel_embed, edge_norm, mode, edge_embed):
         weight = getattr(self, "w_{}".format(mode))
         rel_emb = torch.index_select(rel_embed, 0, edge_type)
+
         if edge_embed is not None:
-            rel_emb = rel_emb + edge_embed
+            if self.p.edge_method == "method1":
+                rel_emb = rel_emb + edge_embed
+            elif self.p.edge_method == "method2":
+                edge_embed_transformed = torch.mm(edge_embed, self.e_weight)
+                rel_emb = rel_emb + edge_embed_transformed
+
         xj_rel = self.rel_transform(x_j, rel_emb)
         out = torch.mm(xj_rel, weight)
+
+        if edge_embed is not None:
+            if self.p.edge_method == "method3":
+                out = out + edge_embed
+            elif self.p.edge_method == "method4":
+                edge_embed_transformed = torch.mm(edge_embed, self.e_weight)
+                out = out + edge_embed_transformed
 
         return out if edge_norm is None else out * edge_norm.view(-1, 1)
 
@@ -144,19 +161,9 @@ class CompGCNConv(MessagePassing):
         row, col = edge_index
         edge_weight = torch.ones_like(row).float()
         deg = scatter_add(edge_weight, row, dim=0, dim_size=num_ent)  # Summing number of weights of the edges
-        deg_inv = deg.pow(-0.5)  # D^{-0.5}
-        deg_inv[deg_inv == float("inf")] = 1
-        norm = deg_inv[row] * edge_weight * deg_inv[col]  # D^{-0.5}
-
-        return norm
-
-    def compute_norm2(self, edge_index, num_ent):
-        row, col = edge_index
-        edge_weight = torch.ones_like(row).float()
-        deg = scatter_add(edge_weight, row, dim=0, dim_size=num_ent)  # Summing number of weights of the edges
-        assert deg[row].min() > 0
-        norm = edge_weight / deg[row].pow(0.5)
-
+        norm = edge_weight / ((deg[row].pow(0.5) + deg[col].pow(0.5)))  # .pow(0.5)
+        # print the first 10 values of norm
+        # print("norm", norm[:10])
         return norm
 
     def __repr__(self):

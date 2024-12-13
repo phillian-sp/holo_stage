@@ -86,31 +86,6 @@ class EdgeGraphsNBFNet(nn.Module):
         num_params = sum(p.numel() for p in self.model.parameters())
         print(f"Number of parameters in self.model: {num_params}")
 
-    #     # Initialize list to store gradient norms
-    #     self.gradient_norms = []
-
-    #     # Register hooks to collect gradient norms
-    #     self.register_gradient_hooks()
-
-    # def register_gradient_hooks(self):
-    #     # Hook function to store gradient norms
-    #     def store_grad_norm(grad):
-    #         self.gradient_norms.append(grad.norm().item())
-
-    #     # Register hook for each parameter in edgegraph_model
-    #     for param in self.edgegraph_model.parameters():
-    #         param.register_hook(store_grad_norm)
-
-    #     # Define hook to calculate average gradient norm after backward pass
-    #     def compute_and_print_average_grad_norm(module, grad_input, grad_output):
-    #         if self.gradient_norms:
-    #             avg_grad_norm = sum(self.gradient_norms) / len(self.gradient_norms)
-    #             print(f"Average gradient norm for edgegraph_model: {avg_grad_norm:.4f}")
-    #             self.gradient_norms.clear()  # Reset for next backward pass
-
-    #     # Attach the hook to self (module level)
-    #     self.register_backward_hook(compute_and_print_average_grad_norm)
-
     def forward(self, data, batch):
         if data.edgegraph_edge_attr.dim() == 1:
             data.edgegraph_edge_attr = data.edgegraph_edge_attr.unsqueeze(-1)
