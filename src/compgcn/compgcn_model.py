@@ -19,7 +19,7 @@ class CompGCNConfig:
     edge_method: str = "method1"
 
     def __post_init__(self):
-        assert self.edge_method in ["method1", "method2", "method3"]
+        assert self.edge_method in ["method1", "method2", "method3", "method4"]
         assert self.opn in ["corr", "sub", "mult"]
         assert self.score_func in ["transe", "distmult"]
         assert self.use_stage in [0, 1]
@@ -31,6 +31,8 @@ class CompGCN(torch.nn.Module):
         num_relation,
         edge_embed_dim,
         cfg: CompGCNConfig,
+        *,
+        return_emb: bool = False,
     ):
         # edge_embed_dim = None
         if not cfg.use_stage:
@@ -39,11 +41,25 @@ class CompGCN(torch.nn.Module):
         self.edge_embed_dim = edge_embed_dim
 
         if cfg.score_func == "transe":
-            self.model = CompGCN_TransE(num_relation // 2, edge_embed_dim, cfg)
+            self.model = CompGCN_TransE(num_relation // 2, edge_embed_dim, cfg, return_emb=return_emb)
         elif cfg.score_func == "distmult":
-            self.model = CompGCN_DistMult(num_relation // 2, edge_embed_dim, cfg)
+            self.model = CompGCN_DistMult(num_relation // 2, edge_embed_dim, cfg, return_emb=return_emb)
         else:
             raise NotImplementedError
+
+    def forward_emb(self, data):
+        self.num_nodes = data.num_nodes
+        # set num_nodes for the model
+        self.model.num_nodes = self.num_nodes
+        edge_index = data.edge_index  # edge indices of shape [2, num_edges]
+        edge_type = data.original_edge_type  # edge types of shape [num_edges]
+        if self.edge_embed_dim is not None:
+            # edge embeddings of shape [num_edges, edge_embed_dim]
+            edge_embed = data.edge_embeddings
+        else:
+            edge_embed = None
+
+        return self.model.forward_emb(edge_index, edge_type, self.model.drop, edge_embed)
 
     def forward(self, data, batch):
         self.num_nodes = data.num_nodes
@@ -97,7 +113,6 @@ class CompGCNBase(BaseModel):
             )
 
     def forward_base(self, edge_index, edge_type, sub, rel, obj, drop, edge_embed=None):
-
         # r: (6, input_dim)
         r = self.init_rel if self.cfg.score_func != "transe" else torch.cat([self.init_rel, -self.init_rel], dim=0)
         init_embed = torch.ones((self.num_nodes, self.cfg.input_dim), device=sub.device)
@@ -114,29 +129,40 @@ class CompGCNBase(BaseModel):
 
         return sub_emb, rel_emb, obj_emb
 
+    def forward_emb(self, edge_index, edge_type, drop, edge_embed=None):
+        # r: (6, input_dim)
+        r = self.init_rel if self.cfg.score_func != "transe" else torch.cat([self.init_rel, -self.init_rel], dim=0)
+        init_embed = torch.ones((self.num_nodes, self.cfg.input_dim), device=edge_index.device)
+        x = init_embed
+        for layer in self.layers:
+            x, r = layer(x, edge_index, edge_type, rel_embed=r, edge_embed=edge_embed)
+            x = drop(x)
+
+        return x
+
 
 class CompGCN_TransE(CompGCNBase):
 
-    def __init__(self, num_rel, edge_embed_dim, cfg: CompGCNConfig):
+    def __init__(self, num_rel, edge_embed_dim, cfg: CompGCNConfig, *, return_emb: bool = False):
         super(self.__class__, self).__init__(num_rel, edge_embed_dim, cfg)
         self.drop = torch.nn.Dropout(self.cfg.hid_drop)
+        self.return_emb = return_emb
 
     def forward(self, edge_index, edge_type, sub, rel, obj, edge_embed=None):
-
         sub_emb, rel_emb, obj_emb = self.forward_base(edge_index, edge_type, sub, rel, obj, self.drop, edge_embed)
         pred_emb = sub_emb + rel_emb
 
         x = self.cfg.gamma - torch.norm(pred_emb.unsqueeze(1) - obj_emb, p=1, dim=2)
-        # score = torch.sigmoid(x)
 
         return x
 
 
 class CompGCN_DistMult(CompGCNBase):
 
-    def __init__(self, num_rel, edge_embed_dim, cfg: CompGCNConfig):
+    def __init__(self, num_rel, edge_embed_dim, cfg: CompGCNConfig, *, return_emb: bool = False):
         super(self.__class__, self).__init__(num_rel, edge_embed_dim, cfg)
         self.drop = torch.nn.Dropout(self.cfg.hid_drop)
+        self.return_emb = return_emb
 
     def forward(self, edge_index, edge_type, sub, rel, obj, edge_embed=None):
         sub_emb, rel_emb, obj_emb = self.forward_base(edge_index, edge_type, sub, rel, obj, self.drop, edge_embed)

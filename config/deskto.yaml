@@ -47,7 +47,7 @@ edgegraph:
     aggregate_func: mean
     short_cut: no
     layer_norm: yes
-    edge_method: method2
+    edge_method: method1
   compgcn:
     input_dim: 256
     num_layers: 5

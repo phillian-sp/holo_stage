@@ -6,7 +6,7 @@ import torch
 from torch_geometric.data import Data
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from nbfnet import tasks, util
+from src import tasks, util
 
 
 vocab_file = os.path.join(os.path.dirname(__file__), "../data/fb15k237_entity.txt")
@@ -28,7 +28,7 @@ def load_vocab(dataset):
     with open(os.path.join(dataset.raw_dir, "relations.dict"), "r") as fin:
         for line in fin:
             id, r_token = line.strip().split("\t")
-            relation_vocab.append("%s (%s)" % (r_token[r_token.rfind("/") + 1:].replace("_", " "), id))
+            relation_vocab.append("%s (%s)" % (r_token[r_token.rfind("/") + 1 :].replace("_", " "), id))
 
     return entity_vocab, relation_vocab
 

@@ -25,8 +25,8 @@ from torch_geometric.utils import to_networkx
 import networkx as nx
 
 
-from nbfnet import models, datasets
-from nbfnet import load_ecommerce
+from src import models, datasets
+from src import load_ecommerce
 
 
 def analyze_connected_components(data):
@@ -182,8 +182,8 @@ def build_dataset(cfg: MainConfig):
     return dataset_list, num_relations
 
 
-def build_model(num_relations, cfg: MainConfig) -> models.EdgeGraphsNBFNet:
-    model = models.EdgeGraphsNBFNet(num_relations, cfg.edgegraph)
+def build_model(num_relations, cfg: MainConfig) -> models.EdgeGraphsModel:
+    model = models.EdgeGraphsModel(num_relations, cfg.edgegraph)
     if cfg.checkpoint != "":
         state = torch.load(cfg.checkpoint, map_location="cpu")
         model.load_state_dict(state["model"])

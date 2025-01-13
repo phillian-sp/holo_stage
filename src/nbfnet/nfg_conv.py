@@ -270,7 +270,7 @@ class GeneralizedRelationalConv(MessagePassing):
         # fused computation of message and aggregate steps with the custom rspmm cuda kernel
         # speed up computation by several times
         # reduce memory complexity from O(|E|d) to O(|V|d), so we can apply it to larger graphs
-        from .rspmm import generalized_rspmm
+        from ..rspmm import generalized_rspmm
 
         batch_size, num_node = input.shape[:2]
         input = input.transpose(0, 1).flatten(1)

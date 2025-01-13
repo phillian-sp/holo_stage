@@ -7,7 +7,9 @@ import torch
 from torch import nn, autograd
 
 from torch_scatter import scatter_add
-from . import nfg_conv, tasks
+
+from . import nfg_conv
+from .. import tasks
 
 
 @dataclass

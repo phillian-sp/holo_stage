@@ -10,9 +10,9 @@ from torch.nn import functional as F
 from torch.utils import data as torch_data
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from nbfnet import tasks, util
-from nbfnet.models import EdgeGraphsNBFNetConfig, EdgeGraphsNBFNet
-from nbfnet.util import DatasetConfig
+from src import tasks, util
+from src.models import EdgeGraphsModelConfig, EdgeGraphsModel, HoloModel, HoloModelConfig
+from src.util import DatasetConfig
 
 from common_utils import MultiCounter, seed_everything, Logger, wrap_ruler
 from dataclasses import dataclass, field
@@ -73,7 +73,9 @@ class MainConfig:
     metric: List[str] = field(default_factory=lambda: METRIC)
 
     # Model cfg
-    edgegraph: EdgeGraphsNBFNetConfig = field(default_factory=EdgeGraphsNBFNetConfig)
+    use_holo: int = 0
+    edgegraph: EdgeGraphsModelConfig = field(default_factory=EdgeGraphsModelConfig)
+    holo: HoloModelConfig = field(default_factory=HoloModelConfig)
 
     # Dataset cfg
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
@@ -141,8 +143,6 @@ class Workspace:
 
         # build dataset
         self.dataset_list, self.num_relations = util.build_dataset(self.cfg)
-        self.model: EdgeGraphsNBFNet = util.build_model(self.num_relations, self.cfg)
-        self.model = self.model.to(self.cfg.device)
         self.train_data_list, self.valid_data_list, self.test_data_list = self.dataset_list
         self.train_data_dict = {
             self.cfg.dataset.train_categories[i]: self.train_data_list[i].to(self.cfg.device)
@@ -156,6 +156,16 @@ class Workspace:
             self.cfg.dataset.test_categories[i]: self.test_data_list[i].to(self.cfg.device)
             for i in range(len(self.test_data_list))
         }
+
+        # build model
+        if self.cfg.use_holo:
+            self.model = HoloModel(self.num_relations, self.cfg.holo)
+        else:
+            self.model = EdgeGraphsModel(self.num_relations, cfg.edgegraph)
+        if cfg.checkpoint != "":
+            state = torch.load(cfg.checkpoint, map_location="cpu")
+            self.model.load_state_dict(state["model"])
+        self.model = self.model.to(self.cfg.device)
 
     def train_and_validate(self):
         if self.cfg.epochs == 0:
@@ -193,7 +203,11 @@ class Workspace:
                         strict=self.cfg.strict_negative,
                     )
                     # pred: [batch_size, num_negative+1]
+                    # exit and print
                     pred = self.model(self.train_data_dict[dataset_name], batch)
+
+                    # print(f"end of model")
+                    # exit()
                     # print(f"pred: {pred}")
                     # target: [batch_size, num_negative+1]
                     target = torch.zeros_like(pred)

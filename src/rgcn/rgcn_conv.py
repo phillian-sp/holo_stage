@@ -55,7 +55,7 @@ class EdgeRGCNConv(MessagePassing):
 
         if self.stage_method == "cat":
             assert edge_embed_dim is not None
-            self.lin_f = nn.Linear(edge_embed_dim + input_dim, output_dim)
+            self.lin_f = nn.Linear(output_dim + input_dim, output_dim)
             nn.init.xavier_uniform_(self.lin_f.weight)
         elif self.stage_method == "add":
             self.lin_f = nn.Identity()
