@@ -3,9 +3,10 @@ import torch.nn as nn
 from torch_geometric.nn import GINEConv, GCNConv
 from torch_geometric.nn.pool import global_add_pool
 from dataclasses import dataclass, field
-from typing import List
 
-from .nbfmodel import NBFNet
+from .nbfmodel import NBFNet, NBFNetConfig
+from .rgcn import RGCN, RGCNConfig
+from .compgcn.models import CompGCN, CompGCNConfig
 
 
 class MPNN(torch.nn.Module):
@@ -37,25 +38,15 @@ class MPNN(torch.nn.Module):
 
 @dataclass
 class EdgeGraphsNBFNetConfig:
-    input_dim: int = 256
-    hidden_dims: List[int] = field(default_factory=lambda: [256] * 6)
-    message_func: str = "distmult"
-    aggregate_func: str = "pna"
-    short_cut: int = 1
-    layer_norm: int = 1
-    activation: str = "relu"
-    concat_hidden: int = 0
-    num_mlp_layer: int = 2
-    dependent: int = 0
-    remove_one_hop: int = 0
-    num_beam: int = 10
-    path_topk: int = 10
-
-    # EdgeGraphsNBFNet specific
     edge_embed_dim: int = 256
     edge_embed_num_layers: int = 1
     edge_model: str = "GINEConv"
     use_p_value: int = 1
+
+    final_model: str = "nbf"
+    nbf: NBFNetConfig = field(default_factory=NBFNetConfig)
+    rgcn: RGCNConfig = field(default_factory=RGCNConfig)
+    compgcn: CompGCNConfig = field(default_factory=CompGCNConfig)
 
 
 class EdgeGraphsNBFNet(nn.Module):
@@ -67,23 +58,14 @@ class EdgeGraphsNBFNet(nn.Module):
         super().__init__()
         self.edge_embed_dim = cfg.edge_embed_dim
         # Create an instance of NBFNet as a member variable
-        self.nbfnet = NBFNet(
-            cfg.input_dim,
-            cfg.hidden_dims,
-            num_relation,
-            cfg.message_func,
-            cfg.aggregate_func,
-            cfg.short_cut,
-            cfg.layer_norm,
-            cfg.activation,
-            cfg.concat_hidden,
-            cfg.num_mlp_layer,
-            cfg.dependent,
-            cfg.remove_one_hop,
-            cfg.num_beam,
-            cfg.path_topk,
-            cfg.edge_embed_dim,
-        )
+        if cfg.final_model == "nbf":
+            self.model = NBFNet(num_relation, cfg.edge_embed_dim, cfg.nbf)
+        elif cfg.final_model == "rgcn":
+            self.model = RGCN(num_relation, cfg.edge_embed_dim, cfg.rgcn)
+        elif cfg.final_model == "compgcn":
+            self.model = CompGCN(num_relation, cfg.edge_embed_dim, cfg.compgcn)
+        else:
+            raise ValueError(f"Invalid final model: {cfg.final_model}")
         if cfg.use_p_value:
             edge_dim = 2
         else:
@@ -95,29 +77,53 @@ class EdgeGraphsNBFNet(nn.Module):
             edge_model=cfg.edge_model,
             edge_dim=edge_dim,
         )
-        self.up_emb = torch.nn.Embedding(
-            1, cfg.edge_embed_dim
-        )  # same embedding for all user product edges
+        self.up_emb = torch.nn.Embedding(1, cfg.edge_embed_dim)  # same embedding for all user product edges
 
         self.edge_model = cfg.edge_model
         self.use_p_value = cfg.use_p_value
+
+        # print number of parameters in self.model
+        num_params = sum(p.numel() for p in self.model.parameters())
+        print(f"Number of parameters in self.model: {num_params}")
+
+    #     # Initialize list to store gradient norms
+    #     self.gradient_norms = []
+
+    #     # Register hooks to collect gradient norms
+    #     self.register_gradient_hooks()
+
+    # def register_gradient_hooks(self):
+    #     # Hook function to store gradient norms
+    #     def store_grad_norm(grad):
+    #         self.gradient_norms.append(grad.norm().item())
+
+    #     # Register hook for each parameter in edgegraph_model
+    #     for param in self.edgegraph_model.parameters():
+    #         param.register_hook(store_grad_norm)
+
+    #     # Define hook to calculate average gradient norm after backward pass
+    #     def compute_and_print_average_grad_norm(module, grad_input, grad_output):
+    #         if self.gradient_norms:
+    #             avg_grad_norm = sum(self.gradient_norms) / len(self.gradient_norms)
+    #             print(f"Average gradient norm for edgegraph_model: {avg_grad_norm:.4f}")
+    #             self.gradient_norms.clear()  # Reset for next backward pass
+
+    #     # Attach the hook to self (module level)
+    #     self.register_backward_hook(compute_and_print_average_grad_norm)
 
     def forward(self, data, batch):
         if data.edgegraph_edge_attr.dim() == 1:
             data.edgegraph_edge_attr = data.edgegraph_edge_attr.unsqueeze(-1)
         if self.edge_model == "GCNConv":
             data.edgegraph_edge_attr = data.edgegraph_edge_attr[:, 0:1]
-        h = self.edgegraph_model(
-            data.edgegraph_x, data.edgegraph_edge_index, data.edgegraph_edge_attr
-        )
+        h = self.edgegraph_model(data.edgegraph_x, data.edgegraph_edge_index, data.edgegraph_edge_attr)
         edgegraph_reprs = global_add_pool(h, data.edgegraph2ppedge)
 
         num_up_edges = data.edge_index.size(-1) - edgegraph_reprs.size(0)
         upgraph_emb = self.up_emb.weight.repeat((num_up_edges, 1))
-
         edge_embeddings = torch.vstack([upgraph_emb, edgegraph_reprs])
 
         data.edge_embeddings = edge_embeddings
         data.x = None
         # Use the NBFNet instance instead of calling super()
-        return self.nbfnet.forward(data, batch)
+        return self.model.forward(data, batch)

@@ -260,8 +260,8 @@ def build_dataset(cfg: MainConfig):
                 train_category=train_category,
                 feature_method="ours",
                 dataset_name=dataset_name,
-                p_value=cfg.nbf.use_p_value,
-                input_dim=cfg.nbf.input_dim,
+                p_value=cfg.edgegraph.use_p_value,
+                input_dim=cfg.edgegraph.nbf.input_dim,
             )
             print(dataset[0])
             # analyze_connected_components(dataset[0])
@@ -287,8 +287,8 @@ def build_dataset(cfg: MainConfig):
                 feature_method="ours",
                 mode="test",
                 dataset_name=dataset_name,
-                p_value=cfg.nbf.use_p_value,
-                input_dim=cfg.nbf.input_dim,
+                p_value=cfg.edgegraph.use_p_value,
+                input_dim=cfg.edgegraph.nbf.input_dim,
             )
 
             print(dataset[0])
@@ -323,54 +323,10 @@ def build_dataset(cfg: MainConfig):
 
 
 def build_model(num_relations, cfg: MainConfig) -> models.EdgeGraphsNBFNet:
-    model = models.EdgeGraphsNBFNet(num_relations, cfg.nbf)
-    # cls = cfg.model.pop("class")
-    # if cls == "NBFNet":
-    #     feature_method = cfg.model.pop("feature_method")
-    #     if feature_method == "ours":
-    #         model = models.EdgeGraphsNBFNet(**cfg.model)
-    #     elif feature_method == "structural":
-    #         cfg.model.pop("edge_embed_dim")
-    #         cfg.model.pop("edge_embed_num_layers")
-    #         cfg.model.pop("edge_model")
-    #         cfg.model.pop("use_p_value")
-    #         model = models.StructuralFeatureNBFNet(**cfg.model)
-    #     elif feature_method == "price":
-    #         cfg.model.pop("edge_embed_dim")
-    #         cfg.model.pop("edge_embed_num_layers")
-    #         cfg.model.pop("edge_model")
-    #         cfg.model.pop("use_p_value")
-    #         model = models.PriceFeatureNBFNet(**cfg.model)
-    #     elif feature_method == "normalized":
-    #         cfg.model.pop("edge_embed_dim")
-    #         cfg.model.pop("edge_embed_num_layers")
-    #         cfg.model.pop("edge_model")
-    #         cfg.model.pop("use_p_value")
-    #         model = models.NormalizedFeatureNBFNet(**cfg.model)
-    #     elif feature_method == "llm":
-    #         cfg.model.pop("edge_embed_dim")
-    #         cfg.model.pop("edge_embed_num_layers")
-    #         cfg.model.pop("edge_model")
-    #         cfg.model.pop("use_p_value")
-    #         model = models.LLMFeatureNBFNet(**cfg.model)
-    #     elif feature_method == "raw":
-    #         cfg.model.pop("edge_embed_dim")
-    #         cfg.model.pop("edge_embed_num_layers")
-    #         cfg.model.pop("edge_model")
-    #         cfg.model.pop("use_p_value")
-    #         model = models.RawFeatureNBFNet(**cfg.model)
-    #     elif feature_method == "gaussian":
-    #         cfg.model.pop("edge_embed_dim")
-    #         cfg.model.pop("edge_embed_num_layers")
-    #         cfg.model.pop("edge_model")
-    #         cfg.model.pop("use_p_value")
-    #         model = models.GaussianFeatureNBFNet(**cfg.model)
-    # else:
-    #     raise ValueError("Unknown model `%s`" % cls)
+    model = models.EdgeGraphsNBFNet(num_relations, cfg.edgegraph)
     if cfg.checkpoint != "":
         state = torch.load(cfg.checkpoint, map_location="cpu")
         model.load_state_dict(state["model"])
-
     return model
 
 
